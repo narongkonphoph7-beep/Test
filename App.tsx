@@ -15,6 +15,13 @@ import { FileUploader } from './components/FileUploader';
 import { ProcessingOverlay } from './components/ProcessingOverlay';
 import { ResultView } from './components/ResultView';
 
+// Declare PDF.js types on window
+declare global {
+  interface Window {
+    pdfjsLib: any;
+  }
+}
+
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>({
     status: AppStatus.IDLE,
@@ -37,10 +44,17 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadVoices = () => {
       const availVoices = window.speechSynthesis.getVoices();
-      setVoices(availVoices);
+      // Sort voices: Prioritize "Google" or "Enhanced" voices for better quality
+      const sortedVoices = availVoices.sort((a, b) => {
+        const aScore = (a.name.includes('Google') || a.name.includes('Enhanced')) ? 1 : 0;
+        const bScore = (b.name.includes('Google') || b.name.includes('Enhanced')) ? 1 : 0;
+        return bScore - aScore;
+      });
+      setVoices(sortedVoices);
     };
 
     loadVoices();
+    // Chrome needs this event, simple load works on others
     if (window.speechSynthesis.onvoiceschanged !== undefined) {
       window.speechSynthesis.onvoiceschanged = loadVoices;
     }
@@ -63,26 +77,62 @@ const App: React.FC = () => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Helper: Compress Image before sending to AI
+  // Helper: Compress Image or Convert PDF to Image before sending to AI
   const compressFile = async (file: File): Promise<FileData> => {
+    // === Handle PDF Files ===
     if (file.type === 'application/pdf') {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === 'string') {
-            resolve({ 
-              base64: reader.result.split(',')[1], 
-              mimeType: file.type 
-            });
-          } else {
-            reject(new Error("Failed to read PDF"));
+      return new Promise(async (resolve, reject) => {
+        try {
+          if (!window.pdfjsLib) {
+             reject(new Error("PDF Processing Library not loaded. Please refresh."));
+             return;
           }
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+
+          const arrayBuffer = await file.arrayBuffer();
+          // Load the PDF document
+          const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
+          const pdf = await loadingTask.promise;
+          
+          // Fetch the first page (Currently supporting 1st page for stability)
+          const page = await pdf.getPage(1);
+          
+          // Adjust scale for quality (2.0 is good for OCR)
+          const viewport = page.getViewport({ scale: 2.0 });
+          
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          
+          if (!context) {
+             reject(new Error("Canvas context not available"));
+             return;
+          }
+
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+
+          const renderContext = {
+            canvasContext: context,
+            viewport: viewport
+          };
+
+          await page.render(renderContext).promise;
+          
+          // Convert to JPEG
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          
+          resolve({
+            base64: dataUrl.split(',')[1],
+            mimeType: 'image/jpeg' // Treat as JPEG for the AI Model
+          });
+          
+        } catch (error) {
+          console.error("PDF Conversion Error:", error);
+          reject(new Error("ไม่สามารถอ่านไฟล์ PDF นี้ได้"));
+        }
       });
     }
 
+    // === Handle Image Files ===
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
@@ -125,7 +175,7 @@ const App: React.FC = () => {
       setState(prev => ({ 
         ...prev, 
         status: AppStatus.UPLOADING, 
-        progressMessage: `กำลังบีบอัดและอัปโหลด ${fileCount} ไฟล์ (OpenRouter)...` 
+        progressMessage: `กำลังแปลงไฟล์และอัปโหลด ${fileCount} รายการ (OpenRouter)...` 
       }));
       
       const filesData = await Promise.all(selectedFiles.map(compressFile));
@@ -163,47 +213,53 @@ const App: React.FC = () => {
   const playAudio = () => {
     if (!state.result?.summary) return;
     
-    // Stop any current speech
+    // 1. Stop any current speech and Reset
     window.speechSynthesis.cancel();
+    setIsAudioPlaying(true);
 
     const fullText = state.result.summary;
     
-    // Find Thai voice
-    const thaiVoice = voices.find(v => v.lang.includes('th')) || null;
+    // 2. Advanced Voice Selection: Try to find Google Thai or best available
+    let thaiVoice = voices.find(v => v.lang === 'th-TH' && v.name.includes('Google')); // Android/Chrome Best
+    if (!thaiVoice) thaiVoice = voices.find(v => v.lang === 'th-TH' && v.name.includes('Narisa')); // Mac Best
+    if (!thaiVoice) thaiVoice = voices.find(v => v.lang.includes('th')); // Fallback
+
+    // 3. Smart Chunking (Fix Stuttering)
+    // Instead of cutting every 150 chars, we only cut at Newlines or if absolutely necessary.
+    // Modern browsers can handle ~32KB, but timeout after ~15 seconds.
+    // 500 Thai chars is roughly 10-15 seconds of speech.
+    const CHUNK_LIMIT = 500;
     
-    // Split text into chunks to avoid browser TTS timeout on long text (common issue on Android/Chrome)
-    // We split by newlines, periods (if any), or spaces if strictly necessary, keeping chunks reasonable size
-    // For Thai, spaces often separate phrases.
+    const rawParagraphs = fullText.split(/[\n\r]+/);
     const chunks: string[] = [];
-    // Clean text and split by logical delimiters
-    const rawChunks = fullText.split(/[\n\r。.]+/);
-    
-    rawChunks.forEach(chunk => {
-      const trimmed = chunk.trim();
-      if (!trimmed) return;
-      
-      // If chunk is too long (>150 chars), try to split by space
-      if (trimmed.length > 150) {
-        const words = trimmed.split(' ');
-        let temp = '';
+
+    rawParagraphs.forEach(para => {
+      if (para.length <= CHUNK_LIMIT) {
+        if (para.trim()) chunks.push(para.trim());
+      } else {
+        // If paragraph is HUGE, split by spaces (Thai phrases)
+        const words = para.split(' ');
+        let currentChunk = '';
+        
         words.forEach(word => {
-          if ((temp + word).length < 150) {
-            temp += word + ' ';
+          if ((currentChunk + word).length > CHUNK_LIMIT) {
+            chunks.push(currentChunk.trim());
+            currentChunk = word + ' ';
           } else {
-            chunks.push(temp.trim());
-            temp = word + ' ';
+            currentChunk += word + ' ';
           }
         });
-        if (temp) chunks.push(temp.trim());
-      } else {
-        chunks.push(trimmed);
+        if (currentChunk.trim()) chunks.push(currentChunk.trim());
       }
     });
 
-    if (chunks.length === 0) return;
+    if (chunks.length === 0) {
+        setIsAudioPlaying(false);
+        return;
+    }
 
+    // 4. Play Queue
     let currentChunkIndex = 0;
-    setIsAudioPlaying(true);
 
     const speakNext = () => {
       if (currentChunkIndex >= chunks.length) {
@@ -214,7 +270,7 @@ const App: React.FC = () => {
       const utterance = new SpeechSynthesisUtterance(chunks[currentChunkIndex]);
       utterance.lang = 'th-TH';
       if (thaiVoice) utterance.voice = thaiVoice;
-      utterance.rate = 0.9; 
+      utterance.rate = 1.0; // Normal speed
       utterance.pitch = 1.0;
 
       utterance.onend = () => {
@@ -224,7 +280,9 @@ const App: React.FC = () => {
 
       utterance.onerror = (e) => {
         console.error("TTS Error:", e);
-        setIsAudioPlaying(false);
+        // Don't stop completely on one chunk error, try next
+        currentChunkIndex++;
+        speakNext();
       };
 
       speechRef.current = utterance;

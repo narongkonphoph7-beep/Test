@@ -14,6 +14,15 @@
     <meta name="apple-mobile-web-app-title" content="ThaiSight">
     <link rel="apple-touch-icon" href="https://api.dicebear.com/7.x/bottts/png?seed=ThaiSight&backgroundColor=2563EB">
 
+    <!-- PDF.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        // Configure PDF.js Worker
+        if (window.pdfjsLib) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        }
+    </script>
+
     <!-- Keep Tailwind CDN for simplicity in this setup -->
     <script src="https://cdn.tailwindcss.com"></script>
     
