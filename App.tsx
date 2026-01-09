@@ -1,5 +1,6 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import { 
   AppStatus, 
   AppState, 
@@ -298,6 +299,7 @@ const App: React.FC = () => {
       <footer className="mt-16 text-center text-gray-500 text-sm">
         <p>@จัดทำโดย น้องปอนด์สุดหล่อจาก CS68  🚀</p>
       </footer>
+      <SpeedInsights />
     </div>
   );
 };
