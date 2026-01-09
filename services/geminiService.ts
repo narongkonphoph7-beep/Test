@@ -1,9 +1,13 @@
+import { GoogleGenAI } from "@google/genai";
 
-import { GoogleGenAI, Modality } from "@google/genai";
-
-const API_KEY = process.env.API_KEY || '';
+// 1. แก้ไขตรงนี้: เรียกใช้ตัวแปรให้ถูกต้องตามฉบับ Vite และชื่อที่ตั้งใน Vercel
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
 export const getGeminiClient = () => {
+  // ตรวจสอบว่ามี Key หรือไม่ (กัน Error)
+  if (!API_KEY) {
+    console.error("API Key is missing! Please check VITE_GEMINI_API_KEY in .env or Vercel settings.");
+  }
   return new GoogleGenAI({ apiKey: API_KEY });
 };
 
@@ -28,25 +32,31 @@ export const performOCRAndSummarize = async (files: FileData[]): Promise<{ origi
     }
   `;
 
-  // Create parts for every file provided, respecting its mime type
+  // Create parts for every file provided
   const fileParts = files.map(file => ({
     inlineData: { mimeType: file.mimeType, data: file.base64 }
   }));
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: {
-      parts: [
-        ...fileParts,
-        { text: prompt }
-      ]
-    },
+    // 2. แก้ไขชื่อโมเดล: ใช้ gemini-2.0-flash-exp (รุ่นปัจจุบันที่ทำงานได้จริง)
+    model: 'gemini-2.0-flash-exp',
+    contents: [
+      {
+        parts: [
+          ...fileParts,
+          { text: prompt }
+        ]
+      }
+    ],
     config: {
       responseMimeType: "application/json"
     }
   });
 
-  const result = JSON.parse(response.text || '{}');
+  // แก้ไขการดึงข้อมูล JSON ให้ปลอดภัยขึ้น
+  const textResponse = response.text ? response.text() : '{}';
+  const result = JSON.parse(textResponse);
+  
   return {
     original: result.originalText || '',
     summary: result.summary || ''
@@ -57,10 +67,17 @@ export const generateThaiSpeech = async (text: string): Promise<string> => {
   const ai = getGeminiClient();
   
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-preview-tts",
-    contents: [{ parts: [{ text: `โปรดอ่านสรุปต่อไปนี้ด้วยน้ำเสียงที่นุ่มนวลและเป็นธรรมชาติ: ${text}` }] }],
+    // ใช้โมเดลเดียวกันที่รองรับ Audio Generation
+    model: "gemini-2.0-flash-exp",
+    contents: [
+        { 
+            parts: [
+                { text: `โปรดอ่านสรุปต่อไปนี้ด้วยน้ำเสียงที่นุ่มนวลและเป็นธรรมชาติ: ${text}` }
+            ] 
+        }
+    ],
     config: {
-      responseModalities: [Modality.AUDIO],
+      responseModalities: ["AUDIO"], // ใช้ String แทน Enum เพื่อลดปัญหา import
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: { voiceName: 'Kore' },
@@ -69,8 +86,12 @@ export const generateThaiSpeech = async (text: string): Promise<string> => {
     },
   });
 
+  // ดึงข้อมูลเสียง (Base64)
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) throw new Error("Could not generate audio content");
+  
+  if (!base64Audio) {
+      throw new Error("Could not generate audio content");
+  }
   
   return base64Audio;
 };
