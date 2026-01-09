@@ -1,4 +1,3 @@
-
 import React, { useRef } from 'react';
 
 interface FileUploaderProps {
@@ -25,7 +24,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const filesArray = Array.from(e.dataTransfer.files).filter(file => 
+      const filesArray = Array.from(e.dataTransfer.files).filter((file: File) => 
         file.type.startsWith('image/') || file.type === 'application/pdf'
       );
       
