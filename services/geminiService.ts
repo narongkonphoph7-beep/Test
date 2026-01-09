@@ -1,7 +1,7 @@
 
 import { GoogleGenAI, Modality } from "@google/genai";
 
-const VITE_GEMINI_API_KEY = process.env.VITE_GEMINI_API_KEY || '';
+const API_KEY = process.env.API_KEY || '';
 
 export const getGeminiClient = () => {
   return new GoogleGenAI({ apiKey: API_KEY });
