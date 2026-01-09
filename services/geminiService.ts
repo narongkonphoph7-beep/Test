@@ -7,32 +7,37 @@ export const getGeminiClient = () => {
   return new GoogleGenAI({ apiKey: API_KEY });
 };
 
-export const performOCRAndSummarize = async (imagesBase64: string[]): Promise<{ original: string; summary: string }> => {
+export interface FileData {
+  base64: string;
+  mimeType: string;
+}
+
+export const performOCRAndSummarize = async (files: FileData[]): Promise<{ original: string; summary: string }> => {
   const ai = getGeminiClient();
   
   const prompt = `
     Please act as a Thai language expert.
-    1. Extract all text from these images (OCR). These images are pages of the same document or related content. Combine the text logically. Fix any obvious spelling mistakes or OCR errors to ensure the text is clean.
+    1. Extract all text from these files (OCR). These files are pages of the same document or related content (can be images or PDFs). Combine the text logically. Fix any obvious spelling mistakes or OCR errors to ensure the text is clean.
     2. Summarize the content of the entire document into a concise, easy-to-understand "story" format in Thai. 
     Focus on key points and takeaways.
     
     Return the response in exactly this JSON format:
     {
-      "originalText": "The full cleaned text from all images here",
+      "originalText": "The full cleaned text from all files here",
       "summary": "The concise summary here"
     }
   `;
 
-  // Create image parts for every image provided
-  const imageParts = imagesBase64.map(base64 => ({
-    inlineData: { mimeType: 'image/jpeg', data: base64 }
+  // Create parts for every file provided, respecting its mime type
+  const fileParts = files.map(file => ({
+    inlineData: { mimeType: file.mimeType, data: file.base64 }
   }));
 
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
     contents: {
       parts: [
-        ...imageParts,
+        ...fileParts,
         { text: prompt }
       ]
     },

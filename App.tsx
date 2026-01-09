@@ -9,7 +9,8 @@ import {
   performOCRAndSummarize, 
   generateThaiSpeech,
   decode,
-  decodeAudioData
+  decodeAudioData,
+  FileData
 } from './services/geminiService';
 
 // Components
@@ -59,17 +60,17 @@ const App: React.FC = () => {
       setState(prev => ({ 
         ...prev, 
         status: AppStatus.UPLOADING, 
-        progressMessage: `กำลังเตรียมความพร้อมของรูปภาพ ${fileCount} รูป...` 
+        progressMessage: `กำลังเตรียมความพร้อมของเอกสาร ${fileCount} ไฟล์...` 
       }));
       
-      // Helper to read file as base64
-      const readFileAsBase64 = (file: File): Promise<string> => {
+      // Helper to read file as base64 and capture mime type
+      const readFileAsBase64 = (file: File): Promise<FileData> => {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => {
             if (typeof reader.result === 'string') {
               const base64 = reader.result.split(',')[1];
-              resolve(base64);
+              resolve({ base64, mimeType: file.type });
             } else {
               reject(new Error("Failed to read file"));
             }
@@ -80,11 +81,11 @@ const App: React.FC = () => {
       };
 
       // Convert all files to base64 concurrently
-      const base64List = await Promise.all(selectedFiles.map(readFileAsBase64));
+      const filesData = await Promise.all(selectedFiles.map(readFileAsBase64));
 
       // STEP 1 & 2 & 3: OCR + Filter + Summarize (Combined in Gemini Prompt)
-      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `รอแปบนะน้อง AI กำลังถอดรหัสข้อความจากเอกสาร ${fileCount} หน้า` }));
-      const { original, summary } = await performOCRAndSummarize(base64List);
+      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `รอแปบนะน้อง AI กำลังถอดรหัสข้อความจากเอกสาร ${fileCount} ไฟล์` }));
+      const { original, summary } = await performOCRAndSummarize(filesData);
 
       // STEP 4: TTS
       setState(prev => ({ ...prev, status: AppStatus.GENERATING_VOICE, progressMessage: 'สมองสรุปเสร็จแล้ว... กำลังเตรียมเสียงบรรยายให้น้องฟังนะ' }));
@@ -179,7 +180,7 @@ const App: React.FC = () => {
               <>
                 <div className="text-center mb-10">
                   <h2 className="text-2xl font-bold text-gray-800 mb-2">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
-                  <p className="text-gray-600">อัปโหลดรูปภาพเอกสารภาษาไทยของคุณที่นี่ (รองรับหลายรูปพร้อมกัน)</p>
+                  <p className="text-gray-600">อัปโหลดรูปภาพ หรือ PDF เอกสารภาษาไทยของคุณที่นี่ (รองรับหลายไฟล์)</p>
                 </div>
                 <FileUploader onUpload={handleFileSelection} />
               </>
@@ -196,22 +197,34 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                  {filePreviews.map((url, index) => (
-                    <div key={index} className="relative group aspect-[3/4] bg-gray-100 rounded-xl overflow-hidden shadow-md border border-gray-200">
-                      <img src={url} alt={`Preview ${index}`} className="w-full h-full object-cover" />
-                      <button 
-                        onClick={() => removeFile(index)}
-                        className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                        </svg>
-                      </button>
-                      <div className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-xs p-2 truncate">
-                        {selectedFiles[index].name}
+                  {filePreviews.map((url, index) => {
+                    const isPdf = selectedFiles[index].type === 'application/pdf';
+                    return (
+                      <div key={index} className="relative group aspect-[3/4] bg-gray-100 rounded-xl overflow-hidden shadow-md border border-gray-200">
+                        {isPdf ? (
+                          <div className="w-full h-full flex flex-col items-center justify-center bg-red-50 text-red-500">
+                             <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 011.414.586l5.414 5.414a1 1 0 01.586 1.414V19a2 2 0 01-2 2z" />
+                             </svg>
+                             <span className="text-sm font-bold mt-2">PDF</span>
+                          </div>
+                        ) : (
+                          <img src={url} alt={`Preview ${index}`} className="w-full h-full object-cover" />
+                        )}
+                        <button 
+                          onClick={() => removeFile(index)}
+                          className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                          </svg>
+                        </button>
+                        <div className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-xs p-2 truncate">
+                          {selectedFiles[index].name}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   
                   {/* Add More Button Block */}
                   <div className="relative aspect-[3/4]">
