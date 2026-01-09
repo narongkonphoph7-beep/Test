@@ -1,14 +1,6 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// เรียก API Key
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
-
-export const getGeminiClient = () => {
-  if (!API_KEY) {
-    console.error("API Key is missing! Check VITE_GEMINI_API_KEY.");
-  }
-  return new GoogleGenerativeAI(API_KEY);
-};
+// The build process replaces this with the actual string
+const API_KEY = process.env.API_KEY || '';
 
 export interface FileData {
   base64: string;
@@ -16,46 +8,82 @@ export interface FileData {
 }
 
 export const performOCRAndSummarize = async (files: FileData[]): Promise<{ original: string; summary: string }> => {
-  const genAI = getGeminiClient();
-  // ใช้โมเดลมาตรฐาน flash 1.5 หรือ 2.0
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  if (!API_KEY) {
+    throw new Error("ไม่พบ API Key (API Key Missing). กรุณาตรวจสอบการตั้งค่า OpenRouter API Key");
+  }
 
-  const prompt = `
-    Please act as a Thai language expert.
-    1. Extract all text from these files.
-    2. Summarize the content into a concise Thai story.
-    Return JSON: { "originalText": "...", "summary": "..." }
+  // 1. Prepare Prompt
+  const promptText = `
+    Task: Thai Document Analysis.
+    1. Extract ALL text from the provided images (OCR). Combine logically.
+    2. Summarize the content into a cohesive, easy-to-understand "Story" in THAI language.
+    
+    Output strictly in this JSON format (do not use markdown code blocks):
+    {
+      "originalText": "All extracted text here...",
+      "summary": "Thai summary story here..."
+    }
   `;
 
-  // แปลงไฟล์ให้ตรงรูปแบบ
-  const fileParts = files.map(file => ({
-    inlineData: { mimeType: file.mimeType, data: file.base64 }
-  }));
+  // 2. Prepare Content Array (Text + Images)
+  const content: any[] = [
+    { type: "text", text: promptText }
+  ];
 
-  const result = await model.generateContent([prompt, ...fileParts]);
-  const response = await result.response;
-  
-  // แกะ JSON ออกมา (แบบปลอดภัย)
-  const text = response.text();
-  const cleanJson = text.replace(/```json|```/g, '').trim(); 
-  
+  files.forEach(file => {
+    // OpenRouter (OpenAI-compatible) expects "image_url" with data URI
+    content.push({
+      type: "image_url",
+      image_url: {
+        url: `data:${file.mimeType};base64,${file.base64}`
+      }
+    });
+  });
+
   try {
-      const parsed = JSON.parse(cleanJson);
-      return {
-        original: parsed.originalText || '',
-        summary: parsed.summary || ''
-      };
-  } catch (e) {
-      console.error("JSON Parse Error", e);
-      return { original: text, summary: "Could not parse summary." };
+    // 3. Call OpenRouter API
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": typeof window !== 'undefined' ? window.location.origin : '',
+        "X-Title": "ThaiSight AI"
+      },
+      body: JSON.stringify({
+        // Using Gemini 2.0 Flash via OpenRouter (Free tier available)
+        model: "google/gemini-2.0-flash-exp:free", 
+        messages: [
+          {
+            role: "user",
+            content: content
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || `OpenRouter API Error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const resultText = data.choices?.[0]?.message?.content || "{}";
+
+    // 4. Parse JSON (Handle potential markdown wrapping)
+    const cleanJson = resultText.replace(/```json\n?|\n?```/g, '').trim();
+    const result = JSON.parse(cleanJson);
+
+    return {
+      original: result.originalText || '',
+      summary: result.summary || ''
+    };
+
+  } catch (error: any) {
+    console.error("OpenRouter Processing Error:", error);
+    if (error.message?.includes('429')) {
+       throw new Error("ระบบกำลังทำงานหนัก (Rate Limit) กรุณารอสักครู่แล้วลองใหม่");
+    }
+    throw error;
   }
 };
-
-export const generateThaiSpeech = async (text: string): Promise<string> => {
-    // ฟังก์ชันนี้ต้องใช้ Endpoint แยก หรือรอ SDK อัปเดต
-    // เบื้องต้นให้ return ค่าว่าง หรือใช้บริการ TTS อื่นชั่วคราวถ้า SDK ยังไม่รองรับในเวอร์ชันนี้
-    console.warn("Speech generation pending implementation for standard SDK");
-    return ""; 
-};
-
-

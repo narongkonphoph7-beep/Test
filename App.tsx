@@ -1,15 +1,11 @@
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   AppStatus, 
-  AppState, 
-  ProcessingResult 
+  AppState
 } from './types';
 import { 
   performOCRAndSummarize, 
-  generateThaiSpeech,
-  decode,
-  decodeAudioData,
   FileData
 } from './services/geminiService';
 
@@ -30,10 +26,10 @@ const App: React.FC = () => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [filePreviews, setFilePreviews] = useState<string[]>([]);
   
-  const [audioBlob, setAudioBlob] = useState<string | null>(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  
+  // Browser Speech Synthesis Reference
+  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Generate previews when files change
   useEffect(() => {
@@ -52,6 +48,60 @@ const App: React.FC = () => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Helper: Compress Image before sending to AI
+  const compressFile = async (file: File): Promise<FileData> => {
+    if (file.type === 'application/pdf') {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            resolve({ 
+              base64: reader.result.split(',')[1], 
+              mimeType: file.type 
+            });
+          } else {
+            reject(new Error("Failed to read PDF"));
+          }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          const MAX_WIDTH = 1500; 
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          resolve({
+            base64: dataUrl.split(',')[1],
+            mimeType: 'image/jpeg'
+          });
+        };
+        img.onerror = (e) => reject(e);
+      };
+      reader.onerror = (e) => reject(e);
+    });
+  };
+
   const handleStartProcessing = async () => {
     if (selectedFiles.length === 0) return;
 
@@ -60,100 +110,62 @@ const App: React.FC = () => {
       setState(prev => ({ 
         ...prev, 
         status: AppStatus.UPLOADING, 
-        progressMessage: `กำลังเตรียมความพร้อมของเอกสาร ${fileCount} ไฟล์...` 
+        progressMessage: `กำลังบีบอัดและอัปโหลด ${fileCount} ไฟล์ (OpenRouter)...` 
       }));
       
-      // Helper to read file as base64 and capture mime type
-      const readFileAsBase64 = (file: File): Promise<FileData> => {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            if (typeof reader.result === 'string') {
-              const base64 = reader.result.split(',')[1];
-              resolve({ base64, mimeType: file.type });
-            } else {
-              reject(new Error("Failed to read file"));
-            }
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-      };
+      const filesData = await Promise.all(selectedFiles.map(compressFile));
 
-      // Convert all files to base64 concurrently
-      const filesData = await Promise.all(selectedFiles.map(readFileAsBase64));
-
-      // STEP 1 & 2 & 3: OCR + Filter + Summarize (Combined in Gemini Prompt)
-      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `รอแปบนะน้อง AI กำลังถอดรหัสข้อความจากเอกสาร ${fileCount} ไฟล์` }));
+      // OCR + Summarize via OpenRouter
+      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `AI กำลังอ่านและสรุปใจความ...` }));
       const { original, summary } = await performOCRAndSummarize(filesData);
 
-      // STEP 4: TTS
-      setState(prev => ({ ...prev, status: AppStatus.GENERATING_VOICE, progressMessage: 'สมองสรุปเสร็จแล้ว... กำลังเตรียมเสียงบรรยายให้น้องฟังนะ' }));
-      const audioBase64 = await generateThaiSpeech(summary);
-      
-      setAudioBlob(audioBase64);
+      // Skip TTS Generation step (we use browser TTS on click)
       setState({
         status: AppStatus.COMPLETED,
         result: {
           originalText: original,
-          summary: summary,
-          audioBase64: audioBase64
+          summary: summary
         },
         error: null,
         progressMessage: 'เรียบร้อยแล้ว!'
       });
     } catch (err: any) {
       console.error(err);
+      
+      let errorMsg = err.message || 'เกิดข้อผิดพลาดบางอย่าง โปรดลองอีกครั้ง';
+      if (err.message?.includes('401')) {
+        errorMsg = "⚠️ API Key ไม่ถูกต้อง โปรดตรวจสอบ OpenRouter Key";
+      }
+
       setState(prev => ({ 
         ...prev, 
         status: AppStatus.ERROR, 
-        error: err.message || 'เกิดข้อผิดพลาดบางอย่าง โปรดลองอีกครั้ง' 
+        error: errorMsg 
       }));
     }
   };
 
-  const playAudio = async () => {
-    if (!audioBlob) return;
+  const playAudio = () => {
+    if (!state.result?.summary) return;
     
-    // Stop existing audio if any
-    if (audioSourceRef.current) {
-      audioSourceRef.current.stop();
-      audioSourceRef.current = null;
-    }
+    // Stop any current speech
+    window.speechSynthesis.cancel();
 
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-    }
-    
-    const ctx = audioContextRef.current;
-    
-    // Ensure context is running (browsers might suspend it)
-    if (ctx.state === 'suspended') {
-      await ctx.resume();
-    }
+    const utterance = new SpeechSynthesisUtterance(state.result.summary);
+    utterance.lang = 'th-TH'; // Set language to Thai
+    utterance.rate = 0.9; // Slightly slower for storytelling
+    utterance.pitch = 1.0;
 
-    const data = decode(audioBlob);
-    const audioBuffer = await decodeAudioData(data, ctx, 24000, 1);
-    
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    
-    source.onended = () => {
-      setIsAudioPlaying(false);
-      audioSourceRef.current = null;
-    };
+    utterance.onstart = () => setIsAudioPlaying(true);
+    utterance.onend = () => setIsAudioPlaying(false);
+    utterance.onerror = () => setIsAudioPlaying(false);
 
-    audioSourceRef.current = source;
-    source.start();
-    setIsAudioPlaying(true);
+    speechRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
   };
 
   const stopAudio = () => {
-    if (audioSourceRef.current) {
-      audioSourceRef.current.stop();
-      audioSourceRef.current = null;
-    }
+    window.speechSynthesis.cancel();
     setIsAudioPlaying(false);
   };
 
@@ -165,7 +177,6 @@ const App: React.FC = () => {
       error: null,
       progressMessage: ''
     });
-    setAudioBlob(null);
     setSelectedFiles([]);
   };
 
@@ -180,7 +191,7 @@ const App: React.FC = () => {
               <>
                 <div className="text-center mb-10">
                   <h2 className="text-2xl font-bold text-gray-800 mb-2">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
-                  <p className="text-gray-600">อัปโหลดรูปภาพ หรือ PDF เอกสารภาษาไทยของคุณที่นี่ (รองรับหลายไฟล์)</p>
+                  <p className="text-gray-600">อัปโหลดรูปภาพ หรือ PDF เอกสารภาษาไทยของคุณที่นี่</p>
                 </div>
                 <FileUploader onUpload={handleFileSelection} />
               </>
@@ -226,7 +237,6 @@ const App: React.FC = () => {
                     );
                   })}
                   
-                  {/* Add More Button Block */}
                   <div className="relative aspect-[3/4]">
                     <FileUploader onUpload={handleFileSelection} compact={true} />
                   </div>
@@ -235,10 +245,10 @@ const App: React.FC = () => {
                 <div className="flex justify-center mt-8">
                   <button
                     onClick={handleStartProcessing}
-                    className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xl font-bold py-4 px-12 rounded-full shadow-xl hover:shadow-2xl transform transition hover:-translate-y-1 active:scale-95 flex items-center space-x-3"
+                    className="bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white text-xl font-bold py-4 px-12 rounded-full shadow-xl hover:shadow-2xl transform transition hover:-translate-y-1 active:scale-95 flex items-center space-x-3"
                   >
                     <span>⚡</span>
-                    <span>เสร็จสิ้น</span>
+                    <span>เริ่มประมวลผล (OpenRouter)</span>
                   </button>
                 </div>
               </div>
@@ -257,9 +267,9 @@ const App: React.FC = () => {
                   <p className="text-sm text-gray-500">รวบรวมเนื้อหาจากทุกหน้า สรุปใจความสำคัญให้เข้าใจง่าย</p>
                 </div>
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 transition hover:shadow-md">
-                  <div className="text-4xl mb-4">🎙️</div>
-                  <h3 className="font-semibold text-lg mb-2">The Voice (Thai TTS)</h3>
-                  <p className="text-sm text-gray-500">แปลงข้อความเป็นเสียงพูดภาษาไทยที่นุ่มนวล</p>
+                  <div className="text-4xl mb-4">🔊</div>
+                  <h3 className="font-semibold text-lg mb-2">Free Voice (Web TTS)</h3>
+                  <p className="text-sm text-gray-500">ฟังเสียงบรรยายได้ฟรีและไม่จำกัดด้วยระบบเสียงของเบราว์เซอร์</p>
                 </div>
               </section>
             )}
