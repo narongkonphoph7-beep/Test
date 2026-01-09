@@ -24,14 +24,17 @@ export const performOCRAndSummarize = async (files: FileData[]): Promise<{ origi
 
   // 1. Prepare Prompt
   const promptText = `
-    Task: Thai Document Analysis.
-    1. Extract ALL text from the provided images (OCR). Combine logically.
-    2. Summarize the content into a cohesive, easy-to-understand "Story" in THAI language.
+    Task: OCR and Summarize Thai Document.
     
-    Output strictly in this JSON format (do not use markdown code blocks):
+    Instructions:
+    1. READ all text from images carefully.
+    2. SUMMARIZE the content into a cohesive story in THAI language (ภาษาไทย).
+    
+    RESPONSE FORMAT:
+    You must return a valid JSON object. Do not add conversational text outside the JSON.
     {
-      "originalText": "All extracted text here...",
-      "summary": "Thai summary story here..."
+      "originalText": "Extracted text...",
+      "summary": "Summary story in Thai..."
     }
   `;
 
@@ -73,8 +76,7 @@ export const performOCRAndSummarize = async (files: FileData[]): Promise<{ origi
               content: content
             }
           ],
-          temperature: 0.7,
-          // Some models require max_tokens to prevent cutting off
+          temperature: 0.5, // Reduced temperature for more deterministic JSON
           max_tokens: 4000 
         })
       });
@@ -98,29 +100,60 @@ export const performOCRAndSummarize = async (files: FileData[]): Promise<{ origi
         throw new Error("Empty response from AI provider");
       }
 
-      const resultText = data.choices[0].message?.content || "{}";
-
-      // 4. Parse JSON
-      // Handle Markdown code blocks often returned by LLMs
-      const cleanJson = resultText.replace(/```json\n?|\n?```/g, '').trim();
+      let resultText = data.choices[0].message?.content || "";
       
-      let result;
-      try {
-        result = JSON.parse(cleanJson);
-      } catch (parseError) {
-        console.error("JSON Parse Error:", parseError, "Raw Text:", resultText);
-        // Fallback: If AI didn't return perfect JSON, treat the whole text as summary
-        // Qwen sometimes is chatty, so this safety net is important.
+      if (!resultText.trim()) {
+         // If empty content, force fallback to next model or error
+         throw new Error("AI returned empty text");
+      }
+
+      console.log("Raw AI Response:", resultText);
+
+      // 4. Robust JSON Parsing
+      let result: any = null;
+
+      // Method A: Try extracting JSON object via regex (find first { and last })
+      const jsonStart = resultText.indexOf('{');
+      const jsonEnd = resultText.lastIndexOf('}');
+      
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+        const potentialJson = resultText.substring(jsonStart, jsonEnd + 1);
+        try {
+          result = JSON.parse(potentialJson);
+        } catch (e) {
+          console.warn("Regex extraction failed, trying cleanup...");
+        }
+      }
+
+      // Method B: Cleanup markdown blocks
+      if (!result) {
+         const cleanJson = resultText
+            .replace(/```json/gi, '')
+            .replace(/```/g, '')
+            .trim();
+         try {
+            result = JSON.parse(cleanJson);
+         } catch (e) {
+            console.warn("Direct JSON parse failed");
+         }
+      }
+
+      // 5. Determine Final Output
+      if (result && (result.summary || result.originalText)) {
+        // Success case with valid JSON
         return {
-          original: "ไม่สามารถแยกข้อความต้นฉบับได้ (JSON Parse Error)",
+          original: result.originalText || "ไม่พบข้อความต้นฉบับ",
+          summary: result.summary || "ไม่สามารถสรุปความได้"
+        };
+      } else {
+        // Fallback: If JSON parsing failed OR result object was empty
+        // Treat the entire raw text as the summary if it looks like text
+        console.log("Using raw text fallback");
+        return {
+          original: "System: ไม่สามารถแยกรูปแบบข้อมูลได้ (Raw Output)",
           summary: resultText
         };
       }
-
-      return {
-        original: result.originalText || '',
-        summary: result.summary || ''
-      };
 
     } catch (error: any) {
       lastError = error;
