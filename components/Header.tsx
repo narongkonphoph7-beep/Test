@@ -5,7 +5,7 @@ export const Header: React.FC = () => {
   return (
     <header className="text-center space-y-4">
       <div className="inline-flex items-center space-x-4 bg-white px-6 py-2 rounded-full shadow-md border border-gray-100">
-        <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-blue-500 shadow-inner flex items-center justify-center bg-gray-50">
+        <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-blue-700 shadow-inner flex items-center justify-center bg-gray-50">
           {/* Replace 'https://api.dicebear.com/7.x/bottts/svg?seed=ThaiSight' with your actual image URL or local path */}
           <img 
             src="https://api.dicebear.com/7.x/bottts/svg?seed=ThaiSight" 

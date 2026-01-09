@@ -6,6 +6,7 @@ import {
 } from './types';
 import { 
   performOCRAndSummarize, 
+  generateNaturalSpeech,
   FileData
 } from './services/geminiService';
 
@@ -22,6 +23,71 @@ declare global {
   }
 }
 
+// === PCM DECODING HELPERS ===
+const base64ToBytes = (base64: string): Uint8Array => {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const pcmToAudioBuffer = (data: Uint8Array, audioContext: AudioContext): AudioBuffer => {
+  const sampleRate = 24000;
+  const numChannels = 1;
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = audioContext.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+};
+
+// === OPTIMIZED CHUNKING ===
+const splitTextIntoOptimizedChunks = (text: string): string[] => {
+  let rawSegments: string[] = [];
+
+  // 1. Initial Split (Sentence level)
+  if (Intl && (Intl as any).Segmenter) {
+    const segmenter = new (Intl as any).Segmenter('th', { granularity: 'sentence' });
+    rawSegments = Array.from(segmenter.segment(text)).map((s: any) => s.segment);
+  } else {
+    rawSegments = text.split(/[\n\r]+|(?<=[.!?])\s+/);
+  }
+
+  const optimizedChunks: string[] = [];
+  let currentChunk = "";
+
+  for (const segment of rawSegments) {
+    const trimmed = segment.trim();
+    if (!trimmed) continue;
+
+    if (!/[ก-๙a-zA-Z0-9]/.test(trimmed)) continue;
+
+    const currentIndex = optimizedChunks.length;
+    let limit = 500; 
+    if (currentIndex === 0) limit = 100;      
+    else if (currentIndex === 1) limit = 300; 
+
+    if ((currentChunk.length + trimmed.length) < limit) {
+      currentChunk += " " + trimmed;
+    } else {
+      if (currentChunk.trim()) optimizedChunks.push(currentChunk.trim());
+      currentChunk = trimmed;
+    }
+  }
+  if (currentChunk.trim()) optimizedChunks.push(currentChunk.trim());
+
+  return optimizedChunks;
+};
+
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>({
     status: AppStatus.IDLE,
@@ -33,34 +99,21 @@ const App: React.FC = () => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [filePreviews, setFilePreviews] = useState<string[]>([]);
   
+  // Audio State
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
+  const [playbackProgress, setPlaybackProgress] = useState({ current: 0, total: 0 });
+  const [selectedVoice, setSelectedVoice] = useState<string>('Puck'); 
   
-  // Browser Speech Synthesis Reference
-  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
-  // Keep track of voices
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  // Refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const isPlayingRef = useRef(false);
+  const nextStartTimeRef = useRef<number>(0);
+  
+  // CACHE SYSTEM: Stores promises of AudioBuffers
+  const audioCacheRef = useRef<Map<number, Promise<AudioBuffer | null>>>(new Map());
 
-  // Load voices when app starts
-  useEffect(() => {
-    const loadVoices = () => {
-      const availVoices = window.speechSynthesis.getVoices();
-      // Sort voices: Prioritize "Google" or "Enhanced" voices for better quality
-      const sortedVoices = availVoices.sort((a, b) => {
-        const aScore = (a.name.includes('Google') || a.name.includes('Enhanced')) ? 1 : 0;
-        const bScore = (b.name.includes('Google') || b.name.includes('Enhanced')) ? 1 : 0;
-        return bScore - aScore;
-      });
-      setVoices(sortedVoices);
-    };
-
-    loadVoices();
-    // Chrome needs this event, simple load works on others
-    if (window.speechSynthesis.onvoiceschanged !== undefined) {
-      window.speechSynthesis.onvoiceschanged = loadVoices;
-    }
-  }, []);
-
-  // Generate previews when files change
   useEffect(() => {
     const urls = selectedFiles.map(file => URL.createObjectURL(file));
     setFilePreviews(urls);
@@ -77,9 +130,49 @@ const App: React.FC = () => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Helper: Compress Image or Convert PDF to Image before sending to AI
+  // Helper to safely get or create AudioContext
+  const getAudioContext = () => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    return audioContextRef.current;
+  };
+
+  // --- CORE FETCH LOGIC ---
+  const fetchChunkData = async (text: string, voice: string, index: number, ctx: AudioContext): Promise<AudioBuffer | null> => {
+    try {
+       const audioBase64 = await generateNaturalSpeech(text, voice);
+       const pcmBytes = base64ToBytes(audioBase64);
+       return pcmToAudioBuffer(pcmBytes, ctx);
+    } catch (e: any) {
+       if (e.message.includes("SKIPPABLE_EMPTY_TEXT")) {
+         console.warn(`Chunk ${index} skipped (empty content)`);
+         return null;
+       }
+       console.error(`Chunk ${index} failed`, e);
+       return null;
+    }
+  };
+
+  // --- PREFETCH SYSTEM ---
+  // Starts loading the first few chunks immediately, even before user clicks play.
+  const startPrefetching = (text: string, voice: string) => {
+    const ctx = getAudioContext();
+    const chunks = splitTextIntoOptimizedChunks(text);
+    
+    // Clear old cache when starting new prefetch (e.g. voice changed or new summary)
+    audioCacheRef.current.clear();
+
+    const PREFETCH_LIMIT = 3; // Number of chunks to pre-load
+    console.log(`🚀 Starting prefetch for ${Math.min(chunks.length, PREFETCH_LIMIT)} chunks (Voice: ${voice})`);
+
+    for (let i = 0; i < Math.min(chunks.length, PREFETCH_LIMIT); i++) {
+        const promise = fetchChunkData(chunks[i], voice, i, ctx);
+        audioCacheRef.current.set(i, promise);
+    }
+  };
+
   const compressFile = async (file: File): Promise<FileData> => {
-    // === Handle PDF Files ===
     if (file.type === 'application/pdf') {
       return new Promise(async (resolve, reject) => {
         try {
@@ -87,18 +180,11 @@ const App: React.FC = () => {
              reject(new Error("PDF Processing Library not loaded. Please refresh."));
              return;
           }
-
           const arrayBuffer = await file.arrayBuffer();
-          // Load the PDF document
           const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
           const pdf = await loadingTask.promise;
-          
-          // Fetch the first page (Currently supporting 1st page for stability)
           const page = await pdf.getPage(1);
-          
-          // Adjust scale for quality (2.0 is good for OCR)
           const viewport = page.getViewport({ scale: 2.0 });
-          
           const canvas = document.createElement('canvas');
           const context = canvas.getContext('2d');
           
@@ -106,25 +192,11 @@ const App: React.FC = () => {
              reject(new Error("Canvas context not available"));
              return;
           }
-
           canvas.height = viewport.height;
           canvas.width = viewport.width;
-
-          const renderContext = {
-            canvasContext: context,
-            viewport: viewport
-          };
-
-          await page.render(renderContext).promise;
-          
-          // Convert to JPEG
+          await page.render({ canvasContext: context, viewport }).promise;
           const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          
-          resolve({
-            base64: dataUrl.split(',')[1],
-            mimeType: 'image/jpeg' // Treat as JPEG for the AI Model
-          });
-          
+          resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
         } catch (error) {
           console.error("PDF Conversion Error:", error);
           reject(new Error("ไม่สามารถอ่านไฟล์ PDF นี้ได้"));
@@ -132,7 +204,6 @@ const App: React.FC = () => {
       });
     }
 
-    // === Handle Image Files ===
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
@@ -143,23 +214,17 @@ const App: React.FC = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          
           const MAX_WIDTH = 1500; 
           if (width > MAX_WIDTH) {
             height *= MAX_WIDTH / width;
             width = MAX_WIDTH;
           }
-
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
-          
           const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-          resolve({
-            base64: dataUrl.split(',')[1],
-            mimeType: 'image/jpeg'
-          });
+          resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
         };
         img.onerror = (e) => reject(e);
       };
@@ -171,20 +236,20 @@ const App: React.FC = () => {
     if (selectedFiles.length === 0) return;
 
     try {
+      stopAudio();
+
       const fileCount = selectedFiles.length;
       setState(prev => ({ 
         ...prev, 
         status: AppStatus.UPLOADING, 
-        progressMessage: `กำลังแปลงไฟล์และอัปโหลด ${fileCount} รายการ (OpenRouter)...` 
+        progressMessage: `กำลังแปลงไฟล์ ${fileCount} รายการ...` 
       }));
       
       const filesData = await Promise.all(selectedFiles.map(compressFile));
 
-      // OCR + Summarize via OpenRouter
-      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `AI กำลังอ่านและสรุปใจความ...` }));
+      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `AI กำลังอ่านและสรุปใจความ (Vision Model)...` }));
       const { original, summary } = await performOCRAndSummarize(filesData);
 
-      // Skip TTS Generation step (we use browser TTS on click)
       setState({
         status: AppStatus.COMPLETED,
         result: {
@@ -194,107 +259,118 @@ const App: React.FC = () => {
         error: null,
         progressMessage: 'เรียบร้อยแล้ว!'
       });
+
+      // === TRIGGER PREFETCH IMMEDIATELY ===
+      // This ensures audio is ready when user clicks play
+      startPrefetching(summary, selectedVoice);
+
     } catch (err: any) {
       console.error(err);
-      
-      let errorMsg = err.message || 'เกิดข้อผิดพลาดบางอย่าง โปรดลองอีกครั้ง';
-      if (err.message?.includes('401')) {
-        errorMsg = "⚠️ API Key ไม่ถูกต้อง โปรดตรวจสอบ OpenRouter Key";
-      }
-
-      setState(prev => ({ 
-        ...prev, 
-        status: AppStatus.ERROR, 
-        error: errorMsg 
-      }));
+      let errorMsg = err.message || 'เกิดข้อผิดพลาดบางอย่าง';
+      setState(prev => ({ ...prev, status: AppStatus.ERROR, error: errorMsg }));
     }
   };
 
-  const playAudio = () => {
+  const handleVoiceChange = (voice: string) => {
+    setSelectedVoice(voice);
+    // If we have a summary, start prefetching the new voice immediately
+    if (state.result?.summary) {
+        stopAudio();
+        startPrefetching(state.result.summary, voice);
+    }
+  };
+
+  const startStreamingPlayback = async () => {
     if (!state.result?.summary) return;
-    
-    // 1. Stop any current speech and Reset
-    window.speechSynthesis.cancel();
-    setIsAudioPlaying(true);
 
-    const fullText = state.result.summary;
-    
-    // 2. Advanced Voice Selection: Try to find Google Thai or best available
-    let thaiVoice = voices.find(v => v.lang === 'th-TH' && v.name.includes('Google')); // Android/Chrome Best
-    if (!thaiVoice) thaiVoice = voices.find(v => v.lang === 'th-TH' && v.name.includes('Narisa')); // Mac Best
-    if (!thaiVoice) thaiVoice = voices.find(v => v.lang.includes('th')); // Fallback
-
-    // 3. Smart Chunking (Fix Stuttering)
-    // Instead of cutting every 150 chars, we only cut at Newlines or if absolutely necessary.
-    // Modern browsers can handle ~32KB, but timeout after ~15 seconds.
-    // 500 Thai chars is roughly 10-15 seconds of speech.
-    const CHUNK_LIMIT = 500;
-    
-    const rawParagraphs = fullText.split(/[\n\r]+/);
-    const chunks: string[] = [];
-
-    rawParagraphs.forEach(para => {
-      if (para.length <= CHUNK_LIMIT) {
-        if (para.trim()) chunks.push(para.trim());
-      } else {
-        // If paragraph is HUGE, split by spaces (Thai phrases)
-        const words = para.split(' ');
-        let currentChunk = '';
-        
-        words.forEach(word => {
-          if ((currentChunk + word).length > CHUNK_LIMIT) {
-            chunks.push(currentChunk.trim());
-            currentChunk = word + ' ';
-          } else {
-            currentChunk += word + ' ';
-          }
-        });
-        if (currentChunk.trim()) chunks.push(currentChunk.trim());
-      }
-    });
-
-    if (chunks.length === 0) {
-        setIsAudioPlaying(false);
-        return;
+    const audioCtx = getAudioContext();
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
     }
 
-    // 4. Play Queue
-    let currentChunkIndex = 0;
+    const chunks = splitTextIntoOptimizedChunks(state.result.summary);
+    if (chunks.length === 0) return;
 
-    const speakNext = () => {
-      if (currentChunkIndex >= chunks.length) {
-        setIsAudioPlaying(false);
-        return;
+    stopAudio(); 
+    setIsAudioPlaying(true);
+    isPlayingRef.current = true;
+    setPlaybackProgress({ current: 0, total: chunks.length });
+    
+    nextStartTimeRef.current = audioCtx.currentTime + 0.1;
+
+    (async () => {
+      for (let i = 0; i < chunks.length; i++) {
+        if (!isPlayingRef.current) break;
+        
+        // --- CACHE & FETCH STRATEGY ---
+        // 1. Check Cache first. If missing, start fetching.
+        if (!audioCacheRef.current.has(i)) {
+            const promise = fetchChunkData(chunks[i], selectedVoice, i, audioCtx);
+            audioCacheRef.current.set(i, promise);
+        }
+
+        // 2. Lookahead: Trigger fetch for NEXT 2 chunks if not in cache
+        for (let j = 1; j <= 2; j++) {
+            const nextIdx = i + j;
+            if (nextIdx < chunks.length && !audioCacheRef.current.has(nextIdx)) {
+                const promise = fetchChunkData(chunks[nextIdx], selectedVoice, nextIdx, audioCtx);
+                audioCacheRef.current.set(nextIdx, promise);
+            }
+        }
+
+        // Update UI
+        if (i === 0) setIsGeneratingAudio(true);
+        setPlaybackProgress({ current: i + 1, total: chunks.length });
+
+        try {
+          // Await the promise from cache
+          const buffer = await audioCacheRef.current.get(i);
+          
+          if (i === 0) setIsGeneratingAudio(false); 
+          if (!isPlayingRef.current) break;
+          if (!buffer) continue; 
+
+          // Schedule Playback
+          if (nextStartTimeRef.current < audioCtx.currentTime) {
+             nextStartTimeRef.current = audioCtx.currentTime;
+          }
+
+          const source = audioCtx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(audioCtx.destination);
+          
+          source.start(nextStartTimeRef.current);
+          
+          activeSourcesRef.current.push(source);
+          
+          source.onended = () => {
+             const idx = activeSourcesRef.current.indexOf(source);
+             if (idx > -1) activeSourcesRef.current.splice(idx, 1);
+             
+             if (i === chunks.length - 1 && activeSourcesRef.current.length === 0) {
+                 setIsAudioPlaying(false);
+                 isPlayingRef.current = false;
+             }
+          };
+
+          nextStartTimeRef.current += buffer.duration;
+
+        } catch (err) {
+          console.error(`Error processing chunk ${i}`, err);
+          setIsGeneratingAudio(false);
+        }
       }
-
-      const utterance = new SpeechSynthesisUtterance(chunks[currentChunkIndex]);
-      utterance.lang = 'th-TH';
-      if (thaiVoice) utterance.voice = thaiVoice;
-      utterance.rate = 1.0; // Normal speed
-      utterance.pitch = 1.0;
-
-      utterance.onend = () => {
-        currentChunkIndex++;
-        speakNext();
-      };
-
-      utterance.onerror = (e) => {
-        console.error("TTS Error:", e);
-        // Don't stop completely on one chunk error, try next
-        currentChunkIndex++;
-        speakNext();
-      };
-
-      speechRef.current = utterance;
-      window.speechSynthesis.speak(utterance);
-    };
-
-    speakNext();
+    })();
   };
 
   const stopAudio = () => {
-    window.speechSynthesis.cancel();
+    isPlayingRef.current = false;
+    activeSourcesRef.current.forEach(source => {
+      try { source.stop(); } catch(e) {}
+    });
+    activeSourcesRef.current = [];
     setIsAudioPlaying(false);
+    setIsGeneratingAudio(false);
   };
 
   const reset = () => {
@@ -306,6 +382,7 @@ const App: React.FC = () => {
       progressMessage: ''
     });
     setSelectedFiles([]);
+    audioCacheRef.current.clear(); // Clear cache on reset
   };
 
   return (
@@ -318,7 +395,7 @@ const App: React.FC = () => {
             {selectedFiles.length === 0 ? (
               <>
                 <div className="text-center mb-10">
-                  <h2 className="text-2xl font-bold text-gray-800 mb-2">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
+                  <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-blue-500 mb-2">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
                   <p className="text-gray-600">อัปโหลดรูปภาพ หรือ PDF เอกสารภาษาไทยของคุณที่นี่</p>
                 </div>
                 <FileUploader onUpload={handleFileSelection} />
@@ -342,9 +419,7 @@ const App: React.FC = () => {
                       <div key={index} className="relative group aspect-[3/4] bg-gray-100 rounded-xl overflow-hidden shadow-md border border-gray-200">
                         {isPdf ? (
                           <div className="w-full h-full flex flex-col items-center justify-center bg-red-50 text-red-500">
-                             <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 011.414.586l5.414 5.414a1 1 0 01.586 1.414V19a2 2 0 01-2 2z" />
-                             </svg>
+                             <span className="text-3xl">📄</span>
                              <span className="text-sm font-bold mt-2">PDF</span>
                           </div>
                         ) : (
@@ -354,17 +429,11 @@ const App: React.FC = () => {
                           onClick={() => removeFile(index)}
                           className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                          </svg>
+                          ✕
                         </button>
-                        <div className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-xs p-2 truncate">
-                          {selectedFiles[index].name}
-                        </div>
                       </div>
                     );
                   })}
-                  
                   <div className="relative aspect-[3/4]">
                     <FileUploader onUpload={handleFileSelection} compact={true} />
                   </div>
@@ -376,7 +445,7 @@ const App: React.FC = () => {
                     className="bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white text-xl font-bold py-4 px-12 rounded-full shadow-xl hover:shadow-2xl transform transition hover:-translate-y-1 active:scale-95 flex items-center space-x-3"
                   >
                     <span>⚡</span>
-                    <span>เริ่มประมวลผล (OpenRouter)</span>
+                    <span>วิเคราะห์ด้วย Gemini Vision</span>
                   </button>
                 </div>
               </div>
@@ -386,18 +455,18 @@ const App: React.FC = () => {
               <section className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 transition hover:shadow-md">
                   <div className="text-4xl mb-4">👁️</div>
-                  <h3 className="font-semibold text-lg mb-2">The Eye (Thai OCR)</h3>
-                  <p className="text-sm text-gray-500">อ่านข้อความภาษาไทยได้แม่นยำ แม้เป็นภาพถ่ายหลายหน้า</p>
+                  <h3 className="font-semibold text-lg mb-2">Gemini Vision</h3>
+                  <p className="text-sm text-gray-500">ใช้โมเดลล่าสุดอ่านภาพภาษาไทยได้คมชัดทุกตัวอักษร</p>
                 </div>
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 transition hover:shadow-md">
                   <div className="text-4xl mb-4">🧠</div>
-                  <h3 className="font-semibold text-lg mb-2">The Brain (AI Summary)</h3>
-                  <p className="text-sm text-gray-500">รวบรวมเนื้อหาจากทุกหน้า สรุปใจความสำคัญให้เข้าใจง่าย</p>
+                  <h3 className="font-semibold text-lg mb-2">Smart Summary</h3>
+                  <p className="text-sm text-gray-500">สรุปใจความสำคัญให้กระชับ เข้าใจง่าย</p>
                 </div>
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 transition hover:shadow-md">
-                  <div className="text-4xl mb-4">🔊</div>
-                  <h3 className="font-semibold text-lg mb-2">Free Voice (Web TTS)</h3>
-                  <p className="text-sm text-gray-500">ฟังเสียงบรรยายได้ฟรีและไม่จำกัดด้วยระบบเสียงของเบราว์เซอร์</p>
+                  <div className="text-4xl mb-4">🎙️</div>
+                  <h3 className="font-semibold text-lg mb-2">Instant Stream Voice</h3>
+                  <p className="text-sm text-gray-500">ระบบสตรีมเสียงความเร็วสูง เล่นต่อเนื่องไม่มีสะดุด</p>
                 </div>
               </section>
             )}
@@ -412,20 +481,23 @@ const App: React.FC = () => {
           <ResultView 
             result={state.result} 
             isPlaying={isAudioPlaying}
-            onPlay={playAudio} 
+            isGenerating={isGeneratingAudio}
+            onPlay={startStreamingPlayback} 
             onStop={stopAudio}
-            onReset={reset} 
+            onReset={reset}
+            selectedVoice={selectedVoice}
+            onVoiceChange={handleVoiceChange}
+            playbackProgress={playbackProgress}
           />
         )}
 
         {state.status === AppStatus.ERROR && (
           <div className="bg-red-50 border border-red-200 p-8 rounded-3xl text-center max-w-md w-full shadow-lg">
-            <div className="text-red-500 text-5xl mb-4">⚠️</div>
             <h3 className="text-xl font-bold text-red-800 mb-2">เกิดข้อผิดพลาด</h3>
             <p className="text-red-600 mb-6">{state.error}</p>
             <button 
               onClick={reset}
-              className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded-full transition transform active:scale-95"
+              className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded-full"
             >
               ลองใหม่อีกครั้ง
             </button>
