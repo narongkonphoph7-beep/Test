@@ -26,8 +26,15 @@ export const performOCRAndSummarize = async (files: FileData[]): Promise<{ origi
         Instructions:
         1. READ all text from images carefully.
         2. SUMMARIZE the content into a cohesive story in THAI language (ภาษาไทย).
-        3. Make the summary engaging, like a storyteller speaking to a friend.
-        4. Do NOT use markdown formatting (like bold **, italics *, headers #) in the summary. Keep it plain text.
+        
+        CRITICAL ACCURACY RULES:
+        - NUMBERS & DATA: You MUST preserve all numbers, dates, times, and prices EXACTLY as they appear. 
+        - DO NOT SWAP DIGITS: (e.g., "02" must remain "02", DO NOT change to "20"). Check every number twice against the image.
+        - ACCURACY OVER CREATIVITY: If there is specific data, prioritize correctness over storytelling flair.
+        
+        Tone & Format:
+        - Make the summary natural and easy to listen to (Spoken Style).
+        - Do NOT use markdown formatting (like bold **, italics *, headers #) in the summary. Keep it plain text.
         
         Output Requirements:
         - Return strictly JSON.
@@ -50,6 +57,7 @@ export const performOCRAndSummarize = async (files: FileData[]): Promise<{ origi
       model: 'gemini-3-flash-preview',
       contents: { parts: parts },
       config: {
+        temperature: 0.3, // Lower temperature to increase accuracy and reduce hallucinations
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -91,6 +99,7 @@ const sanitizeForTTS = (text: string): string => {
     .replace(/\[.*?\]/g, '') // Remove links text
     .replace(/\(https?:\/\/.*?\)/g, '') // Remove link URLs
     .replace(/https?:\/\/\S+/g, '') // Remove raw URLs
+    .replace(/\.{2,}/g, '.') // Replace multiple dots (e.g., ".....") with a single dot to prevent long pauses
     .replace(/[\r\n]+/g, ' ') // Replace newlines with space
     .replace(/\s+/g, ' ') // Collapse whitespace
     .trim();
