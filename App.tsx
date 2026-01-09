@@ -30,6 +30,21 @@ const App: React.FC = () => {
   
   // Browser Speech Synthesis Reference
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
+  // Keep track of voices
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  // Load voices when app starts
+  useEffect(() => {
+    const loadVoices = () => {
+      const availVoices = window.speechSynthesis.getVoices();
+      setVoices(availVoices);
+    };
+
+    loadVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+  }, []);
 
   // Generate previews when files change
   useEffect(() => {
@@ -151,17 +166,72 @@ const App: React.FC = () => {
     // Stop any current speech
     window.speechSynthesis.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(state.result.summary);
-    utterance.lang = 'th-TH'; // Set language to Thai
-    utterance.rate = 0.9; // Slightly slower for storytelling
-    utterance.pitch = 1.0;
+    const fullText = state.result.summary;
+    
+    // Find Thai voice
+    const thaiVoice = voices.find(v => v.lang.includes('th')) || null;
+    
+    // Split text into chunks to avoid browser TTS timeout on long text (common issue on Android/Chrome)
+    // We split by newlines, periods (if any), or spaces if strictly necessary, keeping chunks reasonable size
+    // For Thai, spaces often separate phrases.
+    const chunks: string[] = [];
+    // Clean text and split by logical delimiters
+    const rawChunks = fullText.split(/[\n\r。.]+/);
+    
+    rawChunks.forEach(chunk => {
+      const trimmed = chunk.trim();
+      if (!trimmed) return;
+      
+      // If chunk is too long (>150 chars), try to split by space
+      if (trimmed.length > 150) {
+        const words = trimmed.split(' ');
+        let temp = '';
+        words.forEach(word => {
+          if ((temp + word).length < 150) {
+            temp += word + ' ';
+          } else {
+            chunks.push(temp.trim());
+            temp = word + ' ';
+          }
+        });
+        if (temp) chunks.push(temp.trim());
+      } else {
+        chunks.push(trimmed);
+      }
+    });
 
-    utterance.onstart = () => setIsAudioPlaying(true);
-    utterance.onend = () => setIsAudioPlaying(false);
-    utterance.onerror = () => setIsAudioPlaying(false);
+    if (chunks.length === 0) return;
 
-    speechRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
+    let currentChunkIndex = 0;
+    setIsAudioPlaying(true);
+
+    const speakNext = () => {
+      if (currentChunkIndex >= chunks.length) {
+        setIsAudioPlaying(false);
+        return;
+      }
+
+      const utterance = new SpeechSynthesisUtterance(chunks[currentChunkIndex]);
+      utterance.lang = 'th-TH';
+      if (thaiVoice) utterance.voice = thaiVoice;
+      utterance.rate = 0.9; 
+      utterance.pitch = 1.0;
+
+      utterance.onend = () => {
+        currentChunkIndex++;
+        speakNext();
+      };
+
+      utterance.onerror = (e) => {
+        console.error("TTS Error:", e);
+        setIsAudioPlaying(false);
+      };
+
+      speechRef.current = utterance;
+      window.speechSynthesis.speak(utterance);
+    };
+
+    speakNext();
   };
 
   const stopAudio = () => {
