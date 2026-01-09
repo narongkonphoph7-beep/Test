@@ -14,7 +14,9 @@
     <meta name="apple-mobile-web-app-title" content="ThaiSight">
     <link rel="apple-touch-icon" href="https://api.dicebear.com/7.x/bottts/png?seed=ThaiSight&backgroundColor=2563EB">
 
+    <!-- Keep Tailwind CDN for simplicity in this setup -->
     <script src="https://cdn.tailwindcss.com"></script>
+    
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -22,13 +24,10 @@
         body {
             font-family: 'Prompt', sans-serif;
             background: linear-gradient(135deg, #D6C3CE 0%, #e0e7ff 150%);
-            min-height: 100vh; /* แก้จาก 0vh เป็น 100vh เพื่อให้เต็มจอเสมอ */
+            min-height: 100vh;
             margin: 0;
-            /* ป้องกันการเด้งของหน้าจอใน iOS */
             overscroll-behavior-y: none;
         }
-
-        /* เพิ่ม animation ให้หน้าเว็บดูนุ่มนวลขึ้น */
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -43,7 +42,9 @@
     "react/": "https://esm.sh/react@^19.2.3/",
     "react": "https://esm.sh/react@^19.2.3",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.34.0"
+    "@google/genai": "https://esm.sh/@google/genai@^1.35.0",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "vite": "https://esm.sh/vite@^7.3.1"
   }
 }
 </script>
@@ -51,6 +52,7 @@
 </head>
 <body>
     <div id="root"></div>
-<script type="module" src="/index.tsx"></script>
+    <!-- Vite Entry Point -->
+    <script type="module" src="/index.tsx"></script>
 </body>
 </html>
