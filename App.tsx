@@ -186,21 +186,25 @@ const App: React.FC = () => {
     });
   };
 
-  // Helper: Visual Countdown Wait
-  const waitWithCountdown = async (seconds: number, attempt: number, max: number, part: number, totalParts: number) => {
+  // Helper: Generic Wait with Countdown
+  const waitWithCountdown = async (seconds: number, message: string) => {
     for(let i = seconds; i > 0; i--) {
-      // Update UI every second
       setState(prev => ({
          ...prev,
-         progressMessage: `⏳ คิวเต็ม: กำลังรอ ${i} วินาที... (ลองใหม่ครั้งที่ ${attempt}/${max})`
+         progressMessage: `⚠️ คิวเต็ม: ${message} (รออีก ${i} วินาที)`
       }));
       await new Promise(r => setTimeout(r, 1000));
     }
-    // Restore original message
-    setState(prev => ({
-        ...prev,
-        progressMessage: `กำลังสร้างเสียงบรรยาย... (ส่วนที่ ${part} จาก ${totalParts})`
-    }));
+  };
+
+  // Helper: Check for Quota Error
+  const isQuotaError = (e: any) => {
+    const msg = e.message || '';
+    return msg.includes('429') || 
+           msg.includes('503') || 
+           msg.includes('Overloaded') || 
+           msg.includes('ระบบกำลังทำงานหนัก') || 
+           msg.includes('คิวเต็ม');
   };
 
   // --- CORE FUNCTION: Prepare Full Audio Buffer ---
@@ -217,11 +221,12 @@ const App: React.FC = () => {
       }
 
       let attempt = 0;
-      const maxRetries = 10; // Increased to 10 for resilience
+      const maxRetries = 15; // Increased even more
       let success = false;
 
       while (attempt < maxRetries && !success) {
         try {
+          setState(prev => ({ ...prev, progressMessage: `กำลังสร้างเสียงบรรยาย... (ส่วนที่ ${i + 1}/${chunks.length})` }));
           const b64 = await generateNaturalSpeech(chunks[i], voice);
           const buffer = pcmToAudioBuffer(base64ToBytes(b64), ctx);
           audioBuffers.push(buffer);
@@ -232,14 +237,12 @@ const App: React.FC = () => {
 
            if (attempt >= maxRetries) throw e;
 
-           // Determine if it's a quota error
-           const isQuotaError = e.message.includes('429') || e.message.includes('503') || e.message.includes('Overloaded');
-           
-           // Aggressive backoff: 5s, 10s, 15s...
-           const waitSeconds = isQuotaError ? (attempt * 5) : 2;
-           
-           // Use the visual countdown
-           await waitWithCountdown(waitSeconds, attempt, maxRetries, i + 1, chunks.length);
+           if (isQuotaError(e)) {
+             const waitSeconds = attempt * 3; // 3, 6, 9, 12...
+             await waitWithCountdown(waitSeconds, `กำลังลองใหม่ครั้งที่ ${attempt}`);
+           } else {
+             await new Promise(r => setTimeout(r, 2000));
+           }
         }
       }
     }
@@ -272,9 +275,33 @@ const App: React.FC = () => {
       const filesData = await Promise.all(selectedFiles.map(compressFile));
 
       setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
-      const { original, summary } = await performOCRAndSummarize(filesData);
+      
+      // === OCR RETRY LOOP ===
+      let summaryData = null;
+      let ocrAttempt = 0;
+      const maxOcrRetries = 10;
+      
+      while (!summaryData && ocrAttempt < maxOcrRetries) {
+          try {
+              summaryData = await performOCRAndSummarize(filesData);
+          } catch (e: any) {
+              ocrAttempt++;
+              if (ocrAttempt >= maxOcrRetries) throw e;
+              
+              if (isQuotaError(e)) {
+                  await waitWithCountdown(ocrAttempt * 3, `ระบบอ่านเอกสารกำลังทำงานหนัก (ลองใหม่ ${ocrAttempt}/${maxOcrRetries})`);
+                  // Reset message after wait
+                  setState(prev => ({ ...prev, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
+              } else {
+                  throw e; // Non-quota error, fail immediately
+              }
+          }
+      }
+      
+      if (!summaryData) throw new Error("Failed to process document after multiple attempts.");
+      const { original, summary } = summaryData;
 
-      // === SHOW RESULT IMMEDIATELY (Don't wait for audio) ===
+      // === SHOW RESULT IMMEDIATELY ===
       setState({
         status: AppStatus.COMPLETED,
         result: { 
