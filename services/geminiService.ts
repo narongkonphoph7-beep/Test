@@ -8,6 +8,9 @@ export interface FileData {
 const getFriendlyErrorMessage = (error: any): string => {
   const msg = error.message || error.error || "Unknown error";
   
+  if (msg.includes('API key not valid') || msg.includes('API Key is missing')) {
+    return "⚠️ API Key ผิดพลาด: กรุณาตรวจสอบการตั้งค่าใน Vercel (Settings > Environment Variables)";
+  }
   if (msg.includes('429') || msg.includes('quota') || msg.includes('Too Many Requests')) {
     return "⚠️ ระบบกำลังทำงานหนัก (คิวเต็ม): กรุณารอสักครู่แล้วลองใหม่";
   }

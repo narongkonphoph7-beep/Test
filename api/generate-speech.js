@@ -9,8 +9,6 @@ export const config = {
   },
 };
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 export default async function handler(req, res) {
   // 1. Handle CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -33,9 +31,15 @@ export default async function handler(req, res) {
   try {
     const { text, voiceName } = req.body;
 
-    if (!process.env.API_KEY) {
-      throw new Error("API Key missing in Vercel Environment Variables");
+    // Retrieve and clean the API Key
+    const apiKey = process.env.API_KEY ? process.env.API_KEY.trim() : "";
+
+    if (!apiKey) {
+      throw new Error("API Key is missing in Vercel Environment Variables");
     }
+
+    // Initialize AI Client inside the handler
+    const ai = new GoogleGenAI({ apiKey: apiKey });
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",

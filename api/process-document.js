@@ -1,19 +1,16 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-// Vercel Serverless Function Configuration
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '4.5mb', // Maximum allowed on Vercel Free Tier
+      sizeLimit: '4.5mb',
     },
   },
 };
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 export default async function handler(req, res) {
-  // 1. Handle CORS (Allow connection from your frontend)
+  // 1. Handle CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -22,7 +19,6 @@ export default async function handler(req, res) {
     'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
   );
 
-  // Handle preflight request
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
@@ -35,9 +31,15 @@ export default async function handler(req, res) {
   try {
     const { files } = req.body; 
 
-    if (!process.env.API_KEY) {
-      throw new Error("API Key missing in Vercel Environment Variables");
+    // Retrieve and clean the API Key
+    const apiKey = process.env.API_KEY ? process.env.API_KEY.trim() : "";
+
+    if (!apiKey) {
+      throw new Error("API Key is missing in Vercel Environment Variables");
     }
+
+    // Initialize AI Client inside the handler
+    const ai = new GoogleGenAI({ apiKey: apiKey });
 
     const parts = [];
     parts.push({
@@ -82,6 +84,7 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error("Vercel OCR Error:", error);
+    // Return the actual error message from Google to help debugging
     res.status(500).json({ error: error.message || "OCR Processing Failed" });
   }
 }
