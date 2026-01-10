@@ -1,3 +1,4 @@
+
 import React, { useRef } from 'react';
 
 interface FileUploaderProps {
@@ -38,7 +39,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
      return (
         <div 
           onClick={() => fileInputRef.current?.click()}
-          className="cursor-pointer border-2 border-dashed border-blue-200 bg-white hover:bg-blue-50 transition-all rounded-xl h-full w-full flex flex-col items-center justify-center p-4 text-center min-h-[150px]"
+          className="cursor-pointer border-2 border-dashed border-blue-200 dark:border-slate-600 bg-white dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700 transition-all rounded-xl h-full w-full flex flex-col items-center justify-center p-4 text-center min-h-[150px]"
         >
           <input 
             type="file" 
@@ -48,8 +49,8 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
             ref={fileInputRef}
             onChange={handleChange}
           />
-          <span className="text-3xl mb-2 text-blue-500">+</span>
-          <span className="text-sm text-gray-600 font-medium">เพิ่มรูป/PDF</span>
+          <span className="text-3xl mb-2 text-blue-500 dark:text-blue-400">+</span>
+          <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">เพิ่มรูป/PDF</span>
         </div>
      );
   }
@@ -70,7 +71,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
       />
       <div 
         onClick={() => fileInputRef.current?.click()}
-        className="cursor-pointer border-4 border-dashed border-blue-200 bg-white hover:bg-blue-50 hover:border-blue-400 transition-all duration-300 rounded-[2.5rem] p-12 flex flex-col items-center justify-center space-y-6 shadow-xl hover:shadow-2xl"
+        className="cursor-pointer border-4 border-dashed border-blue-200 dark:border-slate-600 bg-white dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700 hover:border-blue-400 dark:hover:border-blue-500 transition-all duration-300 rounded-[2.5rem] p-12 flex flex-col items-center justify-center space-y-6 shadow-xl hover:shadow-2xl"
       >
         <div className="bg-blue-600 p-6 rounded-full text-white shadow-lg group-hover:scale-110 transition-transform">
           <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -78,8 +79,8 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
           </svg>
         </div>
         <div className="text-center">
-          <p className="text-xl font-bold text-gray-700">คลิก หรือ ลากไฟล์รูป/PDF มาที่นี่</p>
-          <p className="text-gray-500 mt-2">รองรับ JPG, PNG, WebP และ PDF</p>
+          <p className="text-xl font-bold text-gray-700 dark:text-gray-200">คลิก หรือ ลากไฟล์รูป/PDF มาที่นี่</p>
+          <p className="text-gray-500 dark:text-gray-400 mt-2">รองรับ JPG, PNG, WebP และ PDF</p>
         </div>
       </div>
     </div>

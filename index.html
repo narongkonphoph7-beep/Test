@@ -23,8 +23,23 @@
         }
     </script>
 
-    <!-- Keep Tailwind CDN for simplicity in this setup -->
+    <!-- Tailwind CDN with Config -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              slate: {
+                850: '#1e293b', 
+                900: '#0f172a',
+              }
+            }
+          }
+        }
+      }
+    </script>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -36,7 +51,13 @@
             min-height: 100vh;
             margin: 0;
             overscroll-behavior-y: none;
+            transition: background 0.5s ease;
         }
+        /* Dark Mode Background Override */
+        html.dark body {
+            background: #0f172a; /* slate-900 */
+        }
+        
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -53,7 +74,10 @@
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
     "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
     "vite": "https://esm.sh/vite@^7.3.1",
-    "@google/genai": "https://esm.sh/@google/genai"
+    "@google/genai": "https://esm.sh/@google/genai",
+    "express": "https://esm.sh/express@^5.2.1",
+    "dotenv": "https://esm.sh/dotenv@^17.2.3",
+    "cors": "https://esm.sh/cors@^2.8.5"
   }
 }
 </script>

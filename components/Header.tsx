@@ -4,8 +4,8 @@ import React from 'react';
 export const Header: React.FC = () => {
   return (
     <header className="text-center space-y-4">
-      <div className="inline-flex items-center space-x-4 bg-white px-6 py-2 rounded-full shadow-md border border-gray-100">
-        <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-blue-700 shadow-inner flex items-center justify-center bg-gray-50">
+      <div className="inline-flex items-center space-x-4 bg-white dark:bg-slate-800 px-6 py-2 rounded-full shadow-md border border-gray-100 dark:border-slate-700 transition-colors duration-300">
+        <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-blue-700 shadow-inner flex items-center justify-center bg-gray-50 dark:bg-slate-700">
           {/* Replace 'https://api.dicebear.com/7.x/bottts/svg?seed=ThaiSight' with your actual image URL or local path */}
           <img 
             src="https://api.dicebear.com/7.x/bottts/svg?seed=ThaiSight" 
@@ -13,11 +13,11 @@ export const Header: React.FC = () => {
             className="w-full h-full object-cover"
           />
         </div>
-        <h1 className="text-3xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
+        <h1 className="text-3xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400">
           น้องปอนด์สุดหล่อ
         </h1>
       </div>
-      <p className="text-lg text-gray-600 font-medium">
+      <p className="text-lg text-gray-600 dark:text-gray-300 font-medium">
         "เปลี่ยนภาพเอกสาร เป็นเรื่องเล่า... ให้ AI อ่านสรุปให้คุณฟัง"
       </p>
     </header>

@@ -7,14 +7,22 @@ export default defineConfig(({ mode }) => {
   // Load env file based on `mode` in the current working directory.
   const env = loadEnv(mode, (process as any).cwd(), '');
   
-  // Prioritize env vars found in loadEnv, fallback to process.env (system vars in Vercel)
-  const apiKey = env.API_KEY || process.env.API_KEY || '';
-
   return {
     plugins: [react()],
+    server: {
+      proxy: {
+        // Redirect any request starting with /api to our backend server
+        '/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          secure: false,
+        }
+      }
+    },
     define: {
-      // This ensures process.env.API_KEY is replaced with the actual string during build
-      'process.env.API_KEY': JSON.stringify(apiKey),
+      // We don't need to expose API_KEY to the frontend anymore!
+      // But keeping it empty string to prevent build errors if referenced elsewhere
+      'process.env.API_KEY': JSON.stringify(''),
     },
   };
 });

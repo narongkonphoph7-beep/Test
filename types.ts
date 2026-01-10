@@ -3,6 +3,7 @@ export interface ProcessingResult {
   originalText: string;
   summary: string;
   audioBase64?: string;
+  isAudioUnavailable?: boolean; // New flag for UI fallback
 }
 
 export enum AppStatus {
@@ -11,6 +12,7 @@ export enum AppStatus {
   PROCESSING_OCR = 'PROCESSING_OCR',
   SUMMARIZING = 'SUMMARIZING',
   GENERATING_VOICE = 'GENERATING_VOICE',
+  FINISHING = 'FINISHING',
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR'
 }
