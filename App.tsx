@@ -186,6 +186,23 @@ const App: React.FC = () => {
     });
   };
 
+  // Helper: Visual Countdown Wait
+  const waitWithCountdown = async (seconds: number, attempt: number, max: number, part: number, totalParts: number) => {
+    for(let i = seconds; i > 0; i--) {
+      // Update UI every second
+      setState(prev => ({
+         ...prev,
+         progressMessage: `⏳ คิวเต็ม: กำลังรอ ${i} วินาที... (ลองใหม่ครั้งที่ ${attempt}/${max})`
+      }));
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    // Restore original message
+    setState(prev => ({
+        ...prev,
+        progressMessage: `กำลังสร้างเสียงบรรยาย... (ส่วนที่ ${part} จาก ${totalParts})`
+    }));
+  };
+
   // --- CORE FUNCTION: Prepare Full Audio Buffer ---
   // Now runs in background, doesn't block UI
   const prepareFullAudio = async (text: string, voice: string) => {
@@ -200,7 +217,7 @@ const App: React.FC = () => {
       }
 
       let attempt = 0;
-      const maxRetries = 3; 
+      const maxRetries = 10; // Increased to 10 for resilience
       let success = false;
 
       while (attempt < maxRetries && !success) {
@@ -215,9 +232,14 @@ const App: React.FC = () => {
 
            if (attempt >= maxRetries) throw e;
 
-           const isRateLimit = e.message.includes('429');
-           const waitTime = isRateLimit ? (2000 + (attempt * 2000)) : 1000;
-           await new Promise(r => setTimeout(r, waitTime));
+           // Determine if it's a quota error
+           const isQuotaError = e.message.includes('429') || e.message.includes('503') || e.message.includes('Overloaded');
+           
+           // Aggressive backoff: 5s, 10s, 15s...
+           const waitSeconds = isQuotaError ? (attempt * 5) : 2;
+           
+           // Use the visual countdown
+           await waitWithCountdown(waitSeconds, attempt, maxRetries, i + 1, chunks.length);
         }
       }
     }
@@ -303,7 +325,14 @@ const App: React.FC = () => {
     if (ctx.state === 'suspended') await ctx.resume();
 
     if (state.result?.isAudioUnavailable) {
-       alert("ขออภัย: โควต้าสร้างเสียงเต็มในขณะนี้ คุณสามารถอ่านบทสรุปได้ครับ");
+       // If it failed before, try one more time on click!
+       if (state.result?.summary) {
+          // Reset unavailability flag to try again
+          setState(prev => prev.result ? ({...prev, result: {...prev.result, isAudioUnavailable: false}}) : prev);
+          generateAudioInBackground(state.result.summary, selectedVoice);
+       } else {
+          alert("ขออภัย: โควต้าสร้างเสียงเต็มในขณะนี้ คุณสามารถอ่านบทสรุปได้ครับ");
+       }
        return;
     }
 
