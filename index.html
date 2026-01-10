@@ -47,15 +47,45 @@
     <style>
         body {
             font-family: 'Prompt', sans-serif;
-            background: linear-gradient(135deg, #D6C3CE 0%, #e0e7ff 150%);
             min-height: 100vh;
             margin: 0;
             overscroll-behavior-y: none;
+            position: relative;
             transition: background 0.5s ease;
+
+            /* LIGHT MODE: Painted Storybook Landscape (Ghibli Style) */
+            background-color: #3B82F6;
+            background-image: url('https://images.unsplash.com/photo-1565118531796-763e5082d113?q=80&w=2560&auto=format&fit=crop');
+            background-position: center center;
+            background-size: cover;
+            background-attachment: fixed;
+            background-repeat: no-repeat;
         }
-        /* Dark Mode Background Override */
+
+        /* DARK MODE: Digital Art / Fantasy Night Painting */
         html.dark body {
-            background: #0f172a; /* slate-900 */
+            background-color: #0F172A;
+            background-image: url('https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=2560&auto=format&fit=crop');
+            background-position: center center;
+        }
+        
+        /* Background Overlay (Blur/Tint) */
+        body::after {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.2); 
+            backdrop-filter: blur(3px);
+            z-index: -2;
+            pointer-events: none;
+        }
+        
+        html.dark body::after {
+            background: rgba(15, 23, 42, 0.5); 
+            backdrop-filter: blur(2px);
         }
         
         @keyframes fadeIn {
@@ -84,7 +114,8 @@
 <link rel="stylesheet" href="/index.css">
 </head>
 <body>
-    <div id="root"></div>
+    <div id="root" class="relative z-10"></div>
+    
     <!-- Vite Entry Point -->
     <script type="module" src="/index.tsx"></script>
 </body>

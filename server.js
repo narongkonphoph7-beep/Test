@@ -26,20 +26,12 @@ const logUsage = (type) => {
   console.log('------------------------------------------------');
   console.log(`⚡ Action: ${type}`);
   console.log(`📊 Session Usage: ${dailyRequestCount} / ${DAILY_LIMIT} requests`);
-  
-  if (dailyRequestCount >= DAILY_LIMIT) {
-    console.warn('⚠️ WARNING: You are approaching the daily free tier limit!');
-  }
-  
-  const remaining = DAILY_LIMIT - dailyRequestCount;
-  console.log(`✅ Remaining: ~${remaining} requests available today`);
   console.log('------------------------------------------------');
 };
 
-// === SMART RATE LIMITER (TURBO Mode) ===
-// Reduced to 500ms. Fast enough for UI, safe enough for Audio Context.
+// === SMART RATE LIMITER ===
 let lastApiCallTime = 0;
-const MIN_INTERVAL_MS = 500; 
+const MIN_INTERVAL_MS = 1000; // Increased slightly to be safer
 
 const smartThrottle = async () => {
   const now = Date.now();
@@ -47,11 +39,8 @@ const smartThrottle = async () => {
   
   if (timeSinceLastCall < MIN_INTERVAL_MS) {
     const waitTime = MIN_INTERVAL_MS - timeSinceLastCall;
-    // console.log(`⏳ Throttling: Protecting quota, waiting ${waitTime}ms...`);
     await new Promise(resolve => setTimeout(resolve, waitTime));
   }
-  
-  // Update the tracker to NOW (after the wait)
   lastApiCallTime = Date.now();
 };
 
@@ -63,10 +52,7 @@ let ttsQueue = Promise.resolve();
 // 1. OCR & Summary Route
 app.post('/api/process-document', async (req, res) => {
   try {
-    // Apply smart throttle here too for safety, but usually OCR is the first step
-    // so it will likely be instant (0ms wait).
     await smartThrottle();
-    
     logUsage('OCR Processing');
     const { files } = req.body; 
 
@@ -77,7 +63,7 @@ app.post('/api/process-document', async (req, res) => {
         Instructions: 
         1. Read text from images.
         2. Summarize into a CONCISE, COHESIVE story in THAI (ภาษาไทย).
-        3. IMPORTANT: Keep the summary UNDER 300 WORDS to optimize for fast audio generation.
+        3. IMPORTANT: Keep the summary UNDER 300 WORDS.
         4. Tone: Natural Spoken Style (เล่าเรื่อง).
         5. Output JSON: { "originalText": "...", "summary": "..." }
       `
@@ -89,27 +75,39 @@ app.post('/api/process-document', async (req, res) => {
       });
     });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: { parts: parts },
-      config: {
-        temperature: 0.3,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            originalText: { type: Type.STRING },
-            summary: { type: Type.STRING }
-          }
+    const config = {
+      temperature: 0.3,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          originalText: { type: Type.STRING },
+          summary: { type: Type.STRING }
         }
       }
-    });
+    };
 
-    const resultText = response.text;
-    if (!resultText) throw new Error("Empty response from AI");
-    
-    const data = JSON.parse(resultText);
-    res.json(data);
+    // Fallback Logic
+    try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: { parts: parts },
+          config: config
+        });
+        res.json(JSON.parse(response.text));
+    } catch (e) {
+        if (e.message?.includes('429') || e.message?.includes('503')) {
+            console.log("⚠️ Switching to Fallback Model: Gemini 2.0 Flash Exp");
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.0-flash-exp',
+                contents: { parts: parts },
+                config: config
+            });
+            res.json(JSON.parse(response.text));
+        } else {
+            throw e;
+        }
+    }
 
   } catch (error) {
     console.error("OCR Error:", error);
@@ -121,15 +119,11 @@ app.post('/api/process-document', async (req, res) => {
 app.post('/api/generate-speech', async (req, res) => {
   const { text, voiceName } = req.body;
 
-  // Add this request to the queue
   ttsQueue = ttsQueue.then(async () => {
     try {
-      console.log(`Processing TTS... (Text length: ${text.length})`);
-      
-      // Smart Throttle: Only wait if we just made a request (e.g. OCR just finished)
       await smartThrottle();
 
-      // 2. Call Gemini
+      // Only one TTS model available currently, cannot fallback easily
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: text }] }],
@@ -144,10 +138,7 @@ app.post('/api/generate-speech', async (req, res) => {
       });
 
       const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      
-      if (!base64Audio) {
-         throw new Error("No audio data returned");
-      }
+      if (!base64Audio) throw new Error("No audio data returned");
 
       logUsage('TTS Generation');
       res.json({ audioBase64: base64Audio });
@@ -162,5 +153,4 @@ app.post('/api/generate-speech', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Backend Server running on http://localhost:${PORT}`);
-  console.log(`⚡ Speed Mode: TURBO (500ms throttle)`);
 });

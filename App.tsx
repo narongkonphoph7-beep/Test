@@ -91,6 +91,9 @@ const App: React.FC = () => {
   const masterAudioBufferRef = useRef<AudioBuffer | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  
+  // Cancellation Ref
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Dark Mode State
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -139,7 +142,8 @@ const App: React.FC = () => {
           const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
           const pdf = await loadingTask.promise;
           const page = await pdf.getPage(1);
-          const viewport = page.getViewport({ scale: 2.0 });
+          // Reduced scale drastically for speed
+          const viewport = page.getViewport({ scale: 1.0 }); 
           const canvas = document.createElement('canvas');
           const context = canvas.getContext('2d');
           
@@ -150,7 +154,8 @@ const App: React.FC = () => {
           canvas.height = viewport.height;
           canvas.width = viewport.width;
           await page.render({ canvasContext: context, viewport }).promise;
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          // SUPER COMPRESSION: Quality 0.5
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.5); 
           resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
         } catch (error) {
           reject(new Error("Cannot read PDF"));
@@ -168,7 +173,11 @@ const App: React.FC = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          const MAX_WIDTH = 1500; 
+          
+          // AGGRESSIVE RESIZE: Max width 768px (iPad portrait width) is enough for OCR
+          // This reduces payload size by ~60% compared to 1024px
+          const MAX_WIDTH = 768; 
+          
           if (width > MAX_WIDTH) {
             height *= MAX_WIDTH / width;
             width = MAX_WIDTH;
@@ -177,7 +186,9 @@ const App: React.FC = () => {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          
+          // AGGRESSIVE COMPRESSION: Quality 0.5
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
           resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
         };
         img.onerror = (e) => reject(e);
@@ -189,22 +200,30 @@ const App: React.FC = () => {
   // Helper: Generic Wait with Countdown
   const waitWithCountdown = async (seconds: number, message: string) => {
     for(let i = seconds; i > 0; i--) {
+      // Check cancellation
+      if (abortControllerRef.current?.signal.aborted) return;
+      
       setState(prev => ({
          ...prev,
-         progressMessage: `⚠️ คิวเต็ม: ${message} (รออีก ${i} วินาที)`
+         progressMessage: `⏳ ระบบทำงานหนัก: ${message} (รอรีเซ็ต ${i} วินาที)`
       }));
       await new Promise(r => setTimeout(r, 1000));
     }
   };
 
-  // Helper: Check for Quota Error
-  const isQuotaError = (e: any) => {
-    const msg = e.message || '';
+  // Helper: Check for Quota or Retryable Errors (Includes 504/502)
+  const isRetryableError = (e: any) => {
+    const msg = (e.message || '').toLowerCase();
     return msg.includes('429') || 
            msg.includes('503') || 
-           msg.includes('Overloaded') || 
+           msg.includes('504') || 
+           msg.includes('502') || 
+           msg.includes('overloaded') || 
            msg.includes('ระบบกำลังทำงานหนัก') || 
-           msg.includes('คิวเต็ม');
+           msg.includes('คิวเต็ม') ||
+           msg.includes('โควต้าเต็ม') ||
+           msg.includes('timeout') ||
+           msg.includes('connection error');
   };
 
   // --- CORE FUNCTION: Prepare Full Audio Buffer ---
@@ -237,7 +256,7 @@ const App: React.FC = () => {
 
            if (attempt >= maxRetries) throw e;
 
-           if (isQuotaError(e)) {
+           if (isRetryableError(e)) {
              const waitSeconds = attempt * 3; // 3, 6, 9, 12...
              await waitWithCountdown(waitSeconds, `กำลังลองใหม่ครั้งที่ ${attempt}`);
            } else {
@@ -265,6 +284,9 @@ const App: React.FC = () => {
   const handleStartProcessing = async () => {
     if (selectedFiles.length === 0) return;
 
+    // Reset AbortController
+    abortControllerRef.current = new AbortController();
+
     try {
       stopAudio();
       masterAudioBufferRef.current = null;
@@ -274,7 +296,9 @@ const App: React.FC = () => {
       
       const filesData = await Promise.all(selectedFiles.map(compressFile));
 
-      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
+      if (abortControllerRef.current.signal.aborted) return;
+
+      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `กำลังอ่านและสรุปใจความ (โหมดความเร็วสูง)...` }));
       
       // === OCR RETRY LOOP ===
       let summaryData = null;
@@ -282,18 +306,23 @@ const App: React.FC = () => {
       const maxOcrRetries = 10;
       
       while (!summaryData && ocrAttempt < maxOcrRetries) {
+          if (abortControllerRef.current.signal.aborted) return;
+
           try {
-              summaryData = await performOCRAndSummarize(filesData);
+              // Pass signal to service
+              summaryData = await performOCRAndSummarize(filesData, abortControllerRef.current.signal);
           } catch (e: any) {
+              if (abortControllerRef.current.signal.aborted) return;
+
               ocrAttempt++;
               if (ocrAttempt >= maxOcrRetries) throw e;
               
-              if (isQuotaError(e)) {
+              if (isRetryableError(e)) {
                   await waitWithCountdown(ocrAttempt * 3, `ระบบอ่านเอกสารกำลังทำงานหนัก (ลองใหม่ ${ocrAttempt}/${maxOcrRetries})`);
                   // Reset message after wait
                   setState(prev => ({ ...prev, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
               } else {
-                  throw e; // Non-quota error, fail immediately
+                  throw e; // Non-retryable error, fail immediately
               }
           }
       }
@@ -317,9 +346,19 @@ const App: React.FC = () => {
       generateAudioInBackground(summary, selectedVoice);
 
     } catch (err: any) {
+      if (err.name === 'AbortError') return; // Ignore cancellation errors
       console.error(err);
       setState(prev => ({ ...prev, status: AppStatus.ERROR, error: err.message || 'เกิดข้อผิดพลาดในการประมวลผล' }));
     }
+  };
+  
+  const handleCancel = () => {
+      if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+      }
+      stopAudio();
+      setIsGeneratingAudio(false);
+      setState({ status: AppStatus.IDLE, result: null, error: null, progressMessage: '' });
   };
 
   const generateAudioInBackground = async (text: string, voice: string) => {
@@ -411,30 +450,48 @@ const App: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 md:py-12 flex flex-col min-h-screen transition-colors duration-500 relative">
       
-      {/* Dark Mode Toggle */}
+      {/* Dark Mode Toggle with Animation - FRAMELESS & GLOWING */}
       <button 
         onClick={() => setIsDarkMode(!isDarkMode)} 
-        className="fixed top-4 right-4 md:top-6 md:right-6 z-50 p-2 rounded-full focus:outline-none group"
+        className="fixed top-6 right-6 z-50 p-2 transition-transform duration-500 hover:scale-110 active:scale-95 focus:outline-none"
+        aria-label="Toggle Dark Mode"
       >
-        <div className="relative w-16 h-16 md:w-20 md:h-20 transition-transform duration-700 hover:scale-110 active:scale-90">
-             <div className={`absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out transform ${isDarkMode ? 'opacity-0 rotate-180 scale-50' : 'opacity-100 rotate-0 scale-100'}`}>
-                <span className="text-5xl md:text-7xl filter drop-shadow-[0_0_15px_rgba(251,191,36,0.8)] cursor-pointer">☀️</span>
-             </div>
-             <div className={`absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out transform ${isDarkMode ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 -rotate-180 scale-50'}`}>
-                <span className="text-4xl md:text-6xl filter drop-shadow-[0_0_15px_rgba(255,255,255,0.6)] cursor-pointer">🌙</span>
-             </div>
+        <div className="relative w-20 h-20 flex items-center justify-center">
+          {/* Moon Icon */}
+          <span 
+            className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${
+               isDarkMode 
+                 ? 'rotate-0 opacity-100 scale-100 drop-shadow-[0_0_20px_rgba(255,255,255,0.8)]' 
+                 : 'rotate-180 opacity-0 scale-50'
+            }`}
+          >
+            🌙
+          </span>
+          
+          {/* Sun Icon */}
+          <span 
+             className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${
+               !isDarkMode 
+                 ? 'rotate-0 opacity-100 scale-100 drop-shadow-[0_0_25px_rgba(253,186,116,1)]' 
+                 : '-rotate-180 opacity-0 scale-50'
+             }`}
+          >
+            ☀️
+          </span>
         </div>
       </button>
 
       <Header />
       
-      <main className="flex-grow flex flex-col items-center justify-center space-y-8 mt-12">
+      {/* Changed justify-center to justify-start and reduced margins to pull content up */}
+      <main className="flex-grow flex flex-col items-center justify-start space-y-4 mt-2">
         {state.status === AppStatus.IDLE && (
           <div className="w-full animate-fade-in">
             {selectedFiles.length === 0 ? (
               <>
-                <div className="text-center mb-10">
-                  <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-blue-500 mb-2">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
+                {/* Reduced margin from mb-4 to mb-2 */}
+                <div className="text-center mb-2">
+                  <h2 className="text-3xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-blue-500 mb-1 py-2 leading-normal">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
                   <p className="text-gray-600 dark:text-gray-300">อัปโหลดรูปภาพ หรือ PDF เอกสารภาษาไทยของคุณที่นี่</p>
                 </div>
                 <FileUploader onUpload={handleFileSelection} />
@@ -464,7 +521,11 @@ const App: React.FC = () => {
         )}
 
         {state.status !== AppStatus.IDLE && state.status !== AppStatus.COMPLETED && state.status !== AppStatus.ERROR && (
-          <ProcessingOverlay status={state.status} message={state.progressMessage} />
+          <ProcessingOverlay 
+             status={state.status} 
+             message={state.progressMessage} 
+             onCancel={handleCancel}
+          />
         )}
 
         {state.status === AppStatus.COMPLETED && state.result && (

@@ -39,7 +39,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
      return (
         <div 
           onClick={() => fileInputRef.current?.click()}
-          className="cursor-pointer border-2 border-dashed border-blue-200 dark:border-slate-600 bg-white dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700 transition-all rounded-xl h-full w-full flex flex-col items-center justify-center p-4 text-center min-h-[150px]"
+          className="cursor-pointer border-2 border-dashed border-blue-200 dark:border-slate-600 bg-white/70 backdrop-blur-sm dark:bg-slate-800/70 hover:bg-white/90 dark:hover:bg-slate-700 transition-all rounded-xl h-full w-full flex flex-col items-center justify-center p-4 text-center min-h-[150px]"
         >
           <input 
             type="file" 
@@ -71,16 +71,16 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
       />
       <div 
         onClick={() => fileInputRef.current?.click()}
-        className="cursor-pointer border-4 border-dashed border-blue-200 dark:border-slate-600 bg-white dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700 hover:border-blue-400 dark:hover:border-blue-500 transition-all duration-300 rounded-[2.5rem] p-12 flex flex-col items-center justify-center space-y-6 shadow-xl hover:shadow-2xl"
+        className="cursor-pointer border-4 border-dashed border-blue-200 dark:border-slate-600 bg-white/60 backdrop-blur-md dark:bg-slate-900/60 hover:bg-white/80 dark:hover:bg-slate-800/80 hover:border-blue-400 dark:hover:border-blue-500 transition-all duration-300 rounded-[2.5rem] p-16 md:p-24 flex flex-col items-center justify-center space-y-8 shadow-xl hover:shadow-2xl min-h-[350px] md:min-h-[450px]"
       >
-        <div className="bg-blue-600 p-6 rounded-full text-white shadow-lg group-hover:scale-110 transition-transform">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div className="bg-blue-600 p-8 rounded-full text-white shadow-lg group-hover:scale-110 transition-transform">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 md:h-20 md:w-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 011.414.586l5.414 5.414a1 1 0 01.586 1.414V19a2 2 0 01-2 2z" />
           </svg>
         </div>
-        <div className="text-center">
-          <p className="text-xl font-bold text-gray-700 dark:text-gray-200">คลิก หรือ ลากไฟล์รูป/PDF มาที่นี่</p>
-          <p className="text-gray-500 dark:text-gray-400 mt-2">รองรับ JPG, PNG, WebP และ PDF</p>
+        <div className="text-center space-y-2">
+          <p className="text-2xl md:text-3xl font-bold text-gray-800 dark:text-gray-100 drop-shadow-sm">คลิก หรือ ลากไฟล์รูป/PDF มาที่นี่</p>
+          <p className="text-gray-600 dark:text-gray-300 text-lg font-medium">รองรับ JPG, PNG, WebP และ PDF</p>
         </div>
       </div>
     </div>

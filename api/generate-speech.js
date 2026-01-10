@@ -64,6 +64,7 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error("Vercel TTS Error:", error);
-    res.status(500).json({ error: error.message });
+    const status = error.status || (error.message?.includes('429') ? 429 : 500);
+    res.status(status).json({ error: error.message });
   }
 }
