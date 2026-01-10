@@ -194,15 +194,36 @@ const App: React.FC = () => {
 
     // Process chunks sequentially
     for (let i = 0; i < chunks.length; i++) {
-      // NOTE: Removed frontend throttling/sleep here.
-      // We rely on the backend queue to handle rate limiting smartly.
+      // FIX: Add delay to respect Gemini Free Tier Rate Limits (RPM)
+      // Wait 3 seconds between chunks (except the first one) to prevent 429 Errors
+      if (i > 0) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
       try {
         const b64 = await generateNaturalSpeech(chunks[i], voice);
         const buffer = pcmToAudioBuffer(base64ToBytes(b64), ctx);
         audioBuffers.push(buffer);
-      } catch (e) {
-        console.warn("Audio chunk failed:", e);
-        throw e; // Propagate error
+      } catch (e: any) {
+        console.warn("Audio chunk failed, initiating retry:", e);
+        
+        // Retry logic for 429 (Rate Limit)
+        if (e.message.includes('429') || e.message.includes('ระบบกำลังทำงานหนัก') || e.message.includes('quota')) {
+            console.log("Hit rate limit. Waiting 6s before retry...");
+            await new Promise(r => setTimeout(r, 6000)); // Wait longer (6s)
+            
+            try {
+                // Retry once
+                const b64 = await generateNaturalSpeech(chunks[i], voice);
+                const buffer = pcmToAudioBuffer(base64ToBytes(b64), ctx);
+                audioBuffers.push(buffer);
+            } catch (retryErr) {
+                console.error("Retry failed:", retryErr);
+                throw retryErr; // Fail if retry also fails
+            }
+        } else {
+             throw e; // Propagate other errors immediately
+        }
       }
     }
 
@@ -237,10 +258,8 @@ const App: React.FC = () => {
       setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
       const { original, summary } = await performOCRAndSummarize(filesData);
 
-      // NOTE: Removed the 6-second artificial delay here!
-      
       // === GENERATE AUDIO IMMEDIATELY (Soft Fail) ===
-      setState(prev => ({ ...prev, status: AppStatus.GENERATING_VOICE, progressMessage: `กำลังสร้างเสียงบรรยาย...` }));
+      setState(prev => ({ ...prev, status: AppStatus.GENERATING_VOICE, progressMessage: `กำลังสร้างเสียงบรรยาย... (อาจใช้เวลาสักครู่)` }));
       
       let isAudioUnavailable = false;
       try {
@@ -331,7 +350,27 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8 md:py-12 flex flex-col min-h-screen transition-colors duration-500">
+    <div className="max-w-4xl mx-auto px-4 py-8 md:py-12 flex flex-col min-h-screen transition-colors duration-500 relative">
+      
+      {/* Dark Mode Toggle - Top Right Celestial Body */}
+      <button 
+        onClick={() => setIsDarkMode(!isDarkMode)} 
+        className="fixed top-4 right-4 md:top-6 md:right-6 z-50 p-2 rounded-full focus:outline-none group"
+        aria-label={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+      >
+        <div className="relative w-16 h-16 md:w-20 md:h-20 transition-transform duration-700 hover:scale-110 active:scale-90">
+             {/* Sun Icon */}
+             <div className={`absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out transform ${isDarkMode ? 'opacity-0 rotate-180 scale-50' : 'opacity-100 rotate-0 scale-100'}`}>
+                <span className="text-5xl md:text-7xl filter drop-shadow-[0_0_15px_rgba(251,191,36,0.8)] cursor-pointer">☀️</span>
+             </div>
+             
+             {/* Moon Icon */}
+             <div className={`absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out transform ${isDarkMode ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 -rotate-180 scale-50'}`}>
+                <span className="text-4xl md:text-6xl filter drop-shadow-[0_0_15px_rgba(255,255,255,0.6)] cursor-pointer">🌙</span>
+             </div>
+        </div>
+      </button>
+
       <Header />
       
       <main className="flex-grow flex flex-col items-center justify-center space-y-8 mt-12">
@@ -395,9 +434,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <button onClick={() => setIsDarkMode(!isDarkMode)} className="fixed bottom-6 right-6 bg-white dark:bg-slate-800 p-2 rounded-full shadow-xl border">
-         {isDarkMode ? '🌙' : '☀️'}
-      </button>
     </div>
   );
 };
