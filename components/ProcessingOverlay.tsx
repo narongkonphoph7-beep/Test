@@ -10,22 +10,36 @@ interface ProcessingOverlayProps {
 export const ProcessingOverlay: React.FC<ProcessingOverlayProps> = ({ status, message }) => {
   const [progress, setProgress] = useState(5);
 
+  // 1. Handle Status Jumps
   useEffect(() => {
-    // Determine target progress based on status with a more natural progression
     let target = 5;
     switch (status) {
       case AppStatus.UPLOADING: target = 15; break;
       case AppStatus.PROCESSING_OCR: target = 45; break;
       case AppStatus.SUMMARIZING: target = 80; break;
-      case AppStatus.GENERATING_VOICE: target = 95; break;
-      case AppStatus.FINISHING: target = 100; break; // Ensure full bar at finishing state
+      case AppStatus.GENERATING_VOICE: target = 90; break; // Don't go to 100 yet
+      case AppStatus.FINISHING: target = 100; break; 
       case AppStatus.COMPLETED: target = 100; break;
       default: target = 5;
     }
-    
-    // Smoothly update progress
-    const timer = setTimeout(() => setProgress(target), 100);
-    return () => clearTimeout(timer);
+    setProgress(target);
+  }, [status]);
+
+  // 2. Auto-Increment (Fake Progress) for liveliness
+  useEffect(() => {
+    if (status === AppStatus.COMPLETED || status === AppStatus.FINISHING) return;
+
+    const interval = setInterval(() => {
+      setProgress(prev => {
+        // Allow slow creep up to 98% to show it's still alive, but don't finish.
+        if (prev >= 98) return prev;
+        // Move faster if low, slower if high
+        const increment = prev < 80 ? 1 : 0.2; 
+        return Math.min(prev + increment, 98);
+      });
+    }, 200); // Update 5 times a second
+
+    return () => clearInterval(interval);
   }, [status]);
 
   return (
@@ -36,14 +50,14 @@ export const ProcessingOverlay: React.FC<ProcessingOverlayProps> = ({ status, me
         {/* Spinner Ring Background */}
         <div className="absolute inset-0 border-[6px] border-blue-100 dark:border-slate-600 rounded-full"></div>
         {/* Active Spinner Ring - Stop animation when 100% */}
-        <div className={`absolute inset-0 border-[6px] border-blue-600 dark:border-blue-500 rounded-full border-t-transparent ${progress === 100 ? '' : 'animate-spin'}`}></div>
+        <div className={`absolute inset-0 border-[6px] border-blue-600 dark:border-blue-500 rounded-full border-t-transparent ${progress >= 100 ? '' : 'animate-spin'}`}></div>
         
         {/* Center Icon - Updated to the 3D Robot Image */}
         <div className="relative z-10 bg-white dark:bg-slate-800 rounded-full p-2 shadow-sm overflow-hidden">
            <img 
              src="https://api.dicebear.com/7.x/bottts/svg?seed=ThaiSight" 
              alt="Loading" 
-             className={`w-16 h-16 transform transition-transform object-cover ${progress === 100 ? 'scale-110' : ''}`}
+             className={`w-16 h-16 transform transition-transform object-cover ${progress >= 100 ? 'scale-110' : ''}`}
            />
         </div>
       </div>
@@ -51,9 +65,12 @@ export const ProcessingOverlay: React.FC<ProcessingOverlayProps> = ({ status, me
       {/* Text Area */}
       <div className="text-center space-y-3">
         <h3 className="text-3xl font-black text-gray-800 dark:text-white tracking-tight">
-          {progress === 100 ? 'เสร็จเรียบร้อย!' : 'กำลังทำงาน...'}
+          {progress >= 100 ? 'เสร็จเรียบร้อย!' : 'กำลังทำงาน...'}
         </h3>
         <p className="text-blue-600 dark:text-blue-400 font-medium text-lg animate-pulse">{message}</p>
+        <p className="text-sm text-gray-400 dark:text-gray-500 font-mono">
+           {progress.toFixed(0)}%
+        </p>
       </div>
 
       {/* Progress Bar Container */}
@@ -61,7 +78,7 @@ export const ProcessingOverlay: React.FC<ProcessingOverlayProps> = ({ status, me
         <div className="w-full bg-gray-100 dark:bg-slate-700 h-4 rounded-full overflow-hidden relative shadow-inner">
            {/* Filled Bar */}
            <div 
-             className="h-full bg-gradient-to-r from-blue-400 to-blue-600 dark:from-blue-500 dark:to-blue-400 rounded-full transition-all duration-[1000ms] ease-out shadow-[0_0_15px_rgba(37,99,235,0.4)]"
+             className="h-full bg-gradient-to-r from-blue-400 to-blue-600 dark:from-blue-500 dark:to-blue-400 rounded-full transition-all duration-[200ms] ease-linear shadow-[0_0_15px_rgba(37,99,235,0.4)]"
              style={{ width: `${progress}%` }}
            >
            </div>

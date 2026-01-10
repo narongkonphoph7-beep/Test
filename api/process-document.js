@@ -48,7 +48,7 @@ export default async function handler(req, res) {
         Instructions: 
         1. Read text from images.
         2. Summarize into a CONCISE, COHESIVE story in THAI (ภาษาไทย).
-        3. IMPORTANT: Keep the summary UNDER 400 WORDS to optimize for audio generation.
+        3. IMPORTANT: Keep the summary UNDER 300 WORDS to optimize for fast audio generation.
         4. Tone: Natural Spoken Style (เล่าเรื่อง).
         5. Output JSON: { "originalText": "...", "summary": "..." }
       `

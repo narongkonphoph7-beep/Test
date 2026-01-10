@@ -36,11 +36,10 @@ const logUsage = (type) => {
   console.log('------------------------------------------------');
 };
 
-// === SMART RATE LIMITER (The Speed Upgrade) ===
-// Instead of blind waiting, we track the LAST call time.
-// If enough time has passed, we don't wait at all!
+// === SMART RATE LIMITER (TURBO Mode) ===
+// Reduced to 500ms. Fast enough for UI, safe enough for Audio Context.
 let lastApiCallTime = 0;
-const MIN_INTERVAL_MS = 4000; // 15 RPM = 1 request every 4 seconds
+const MIN_INTERVAL_MS = 500; 
 
 const smartThrottle = async () => {
   const now = Date.now();
@@ -48,7 +47,7 @@ const smartThrottle = async () => {
   
   if (timeSinceLastCall < MIN_INTERVAL_MS) {
     const waitTime = MIN_INTERVAL_MS - timeSinceLastCall;
-    console.log(`⏳ Throttling: Protecting quota, waiting ${waitTime}ms...`);
+    // console.log(`⏳ Throttling: Protecting quota, waiting ${waitTime}ms...`);
     await new Promise(resolve => setTimeout(resolve, waitTime));
   }
   
@@ -78,7 +77,7 @@ app.post('/api/process-document', async (req, res) => {
         Instructions: 
         1. Read text from images.
         2. Summarize into a CONCISE, COHESIVE story in THAI (ภาษาไทย).
-        3. IMPORTANT: Keep the summary UNDER 400 WORDS to optimize for audio generation.
+        3. IMPORTANT: Keep the summary UNDER 300 WORDS to optimize for fast audio generation.
         4. Tone: Natural Spoken Style (เล่าเรื่อง).
         5. Output JSON: { "originalText": "...", "summary": "..." }
       `
@@ -163,5 +162,5 @@ app.post('/api/generate-speech', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Backend Server running on http://localhost:${PORT}`);
-  console.log(`⚡ Speed Mode: Optimized (Smart Throttling)`);
+  console.log(`⚡ Speed Mode: TURBO (500ms throttle)`);
 });
