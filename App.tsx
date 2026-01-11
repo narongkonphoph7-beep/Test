@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   AppStatus, 
@@ -50,19 +49,22 @@ const pcmToAudioBuffer = (data: Uint8Array, audioContext: AudioContext): AudioBu
   return buffer;
 };
 
-// === SIMPLE SPLITTER ===
-// Updated: Supports custom maxLength to optimize for parallel fetching
-const splitTextSimple = (text: string, maxLength: number = 800): string[] => {
+// === SMART SPLITTER ===
+// Chunk 0 is kept smaller for instant playback
+const splitTextSmart = (text: string): string[] => {
   const chunks: string[] = [];
+  const sentences = text.split(/([\n.!?]+)/);
   
   let currentChunk = "";
-  // Split by sentence delimiters but keep them
-  const sentences = text.split(/([\n.!?]+)/);
+  // First chunk limit: 300 chars (Fast load)
+  // Subsequent chunks: 800 chars (Efficient batching)
+  let currentLimit = 300; 
 
   for (const s of sentences) {
-    if ((currentChunk.length + s.length) > maxLength && currentChunk.trim()) {
+    if ((currentChunk.length + s.length) > currentLimit && currentChunk.trim()) {
       chunks.push(currentChunk.trim());
       currentChunk = s;
+      currentLimit = 800; // Increase limit for subsequent chunks
     } else {
       currentChunk += s;
     }
@@ -84,45 +86,36 @@ const App: React.FC = () => {
   
   // Audio State
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
-  const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
+  const [isFirstChunkReady, setIsFirstChunkReady] = useState(false); // New flag for instant UI enable
   const [selectedVoice, setSelectedVoice] = useState<string>('Puck'); 
-  
-  // The Master Audio Buffer (Pre-loaded)
-  const masterAudioBufferRef = useRef<AudioBuffer | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const [currentPlayingIndex, setCurrentPlayingIndex] = useState(0);
+
+  // Audio Engine Refs
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
+  // Queue System: Map<ChunkIndex, AudioBuffer>
+  const audioQueueRef = useRef<Map<number, AudioBuffer>>(new Map());
+  const totalChunksRef = useRef<number>(0);
+  const isPlayingRef = useRef(false);
+
   // Cancellation Refs
-  const mainProcessAbortControllerRef = useRef<AbortController | null>(null); // For OCR
-  const audioProcessAbortControllerRef = useRef<AbortController | null>(null); // For TTS
+  const mainProcessAbortControllerRef = useRef<AbortController | null>(null);
+  const audioProcessAbortControllerRef = useRef<AbortController | null>(null);
 
   // Dark Mode State
   const [isDarkMode, setIsDarkMode] = useState(false);
 
-  // Dark Mode Effect
   useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    if (isDarkMode) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
   }, [isDarkMode]);
 
   useEffect(() => {
     const urls = selectedFiles.map(file => URL.createObjectURL(file));
     setFilePreviews(urls);
-    return () => {
-      urls.forEach(url => URL.revokeObjectURL(url));
-    };
+    return () => urls.forEach(url => URL.revokeObjectURL(url));
   }, [selectedFiles]);
-
-  const handleFileSelection = (files: File[]) => {
-    setSelectedFiles(prev => [...prev, ...files]);
-  };
-
-  const removeFile = (index: number) => {
-    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
-  };
 
   const getAudioContext = () => {
     if (!audioContextRef.current) {
@@ -135,32 +128,21 @@ const App: React.FC = () => {
     if (file.type === 'application/pdf') {
       return new Promise(async (resolve, reject) => {
         try {
-          if (!window.pdfjsLib) {
-             reject(new Error("PDF Lib not loaded."));
-             return;
-          }
+          if (!window.pdfjsLib) { reject(new Error("PDF Lib not loaded.")); return; }
           const arrayBuffer = await file.arrayBuffer();
           const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
           const pdf = await loadingTask.promise;
           const page = await pdf.getPage(1);
-          // Reduced scale drastically for speed
           const viewport = page.getViewport({ scale: 1.0 }); 
           const canvas = document.createElement('canvas');
           const context = canvas.getContext('2d');
-          
-          if (!context) {
-             reject(new Error("No Canvas context"));
-             return;
-          }
+          if (!context) { reject(new Error("No Canvas context")); return; }
           canvas.height = viewport.height;
           canvas.width = viewport.width;
           await page.render({ canvasContext: context, viewport }).promise;
-          // SUPER COMPRESSION: Quality 0.5
           const dataUrl = canvas.toDataURL('image/jpeg', 0.5); 
           resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
-        } catch (error) {
-          reject(new Error("Cannot read PDF"));
-        }
+        } catch (error) { reject(new Error("Cannot read PDF")); }
       });
     }
 
@@ -174,21 +156,12 @@ const App: React.FC = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          
-          // AGGRESSIVE RESIZE: Max width 768px (iPad portrait width) is enough for OCR
-          // This reduces payload size by ~60% compared to 1024px
           const MAX_WIDTH = 768; 
-          
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
+          if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
-          
-          // AGGRESSIVE COMPRESSION: Quality 0.5
           const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
           resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' });
         };
@@ -198,324 +171,208 @@ const App: React.FC = () => {
     });
   };
 
-  // Helper: Generic Wait with Countdown
-  const waitWithCountdown = async (seconds: number, message: string, signal?: AbortSignal) => {
-    for(let i = seconds; i > 0; i--) {
-      // Check cancellation
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      
-      setState(prev => ({
-         ...prev,
-         progressMessage: `⏳ ระบบทำงานหนัก: ${message} (รอรีเซ็ต ${i} วินาที)`
-      }));
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  };
-
-  // Helper: Check for Quota or Retryable Errors (Includes 504/502)
   const isRetryableError = (e: any) => {
     const msg = (e.message || '').toLowerCase();
-    return msg.includes('429') || 
-           msg.includes('503') || 
-           msg.includes('504') || 
-           msg.includes('502') || 
-           msg.includes('overloaded') || 
-           msg.includes('ระบบกำลังทำงานหนัก') || 
-           msg.includes('คิวเต็ม') ||
-           msg.includes('โควต้าเต็ม') ||
-           msg.includes('timeout') ||
-           msg.includes('connection error');
+    return msg.includes('429') || msg.includes('503') || msg.includes('504') || msg.includes('timeout');
   };
 
-  // --- CORE FUNCTION: Prepare Full Audio Buffer (PARALLEL OPTIMIZED) ---
-  // Now fetches chunks in parallel to speed up generation
-  const prepareFullAudio = async (text: string, voice: string, signal?: AbortSignal) => {
+  // --- NEW AUDIO ENGINE: SEQUENTIAL CHUNK LOADING ---
+  const startSmartAudioGeneration = async (text: string, voice: string) => {
+    // 1. Reset Audio State
+    stopAudio();
+    audioQueueRef.current.clear();
+    setIsFirstChunkReady(false);
+    
+    // 2. Setup Cancellation
+    if (audioProcessAbortControllerRef.current) audioProcessAbortControllerRef.current.abort();
+    audioProcessAbortControllerRef.current = new AbortController();
+    const signal = audioProcessAbortControllerRef.current.signal;
+
+    // 3. Prepare chunks
+    const chunks = splitSmartSmart(text);
+    totalChunksRef.current = chunks.length;
+
     const ctx = getAudioContext();
-    
-    // Split text into smaller chunks (~600 chars) for effective parallelism
-    // 600 chars is roughly 2 paragraphs. For a 2000 char summary, this creates ~4 requests.
-    const chunks = splitTextSimple(text, 600);
-    
-    // Track progress locally to minimize state updates
-    let completedCount = 0;
-    const updateProgress = () => {
-       completedCount++;
-       // Update UI occasionally to show progress
-       setState(prev => ({ 
-           ...prev, 
-           progressMessage: `กำลังสร้างเสียงบรรยาย... (${completedCount}/${chunks.length} ส่วน)` 
-       }));
-    };
 
-    // Map each chunk to a promise
-    const promises = chunks.map(async (chunk, index) => {
-      // Early abort check
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
-      let attempt = 0;
-      const maxRetries = 8; // Slightly reduced retries for parallel requests
+    // 4. FETCH FIRST CHUNK (High Priority)
+    try {
+      const b64_0 = await generateNaturalSpeech(chunks[0], voice, signal);
+      if (signal.aborted) return;
       
-      while (attempt < maxRetries) {
-        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-        
-        try {
-          const b64 = await generateNaturalSpeech(chunk, voice, signal);
-          const buffer = pcmToAudioBuffer(base64ToBytes(b64), ctx);
-          updateProgress();
-          return buffer;
-        } catch (e: any) {
-           if (e.name === 'AbortError') throw e;
-
-           attempt++;
-           console.warn(`Audio chunk ${index+1}/${chunks.length} failed attempt ${attempt}:`, e);
-
-           if (attempt >= maxRetries) throw e;
-
-           // Randomized backoff to prevent thundering herd on retry
-           if (isRetryableError(e)) {
-             const waitTime = (attempt * 1000) + (Math.random() * 1000);
-             await new Promise(r => setTimeout(r, waitTime));
-           } else {
-             await new Promise(r => setTimeout(r, 1000));
-           }
+      const buffer_0 = pcmToAudioBuffer(base64ToBytes(b64_0), ctx);
+      audioQueueRef.current.set(0, buffer_0);
+      
+      // *** MAGIC MOMENT: Enable Play button immediately after 1st chunk ***
+      setIsFirstChunkReady(true); 
+    } catch (e: any) {
+        if (e.name !== 'AbortError') {
+             console.error("First chunk failed", e);
+             setState(prev => prev.result ? ({...prev, result: {...prev.result, isAudioUnavailable: true}}) : prev);
         }
-      }
-      throw new Error("Failed to generate audio chunk");
-    });
-
-    // Wait for all chunks to resolve (Parallel Execution)
-    const audioBuffers = await Promise.all(promises);
-
-    if (audioBuffers.length === 0) return null;
-
-    // Combine buffers
-    const totalLength = audioBuffers.reduce((acc, b) => acc + b.length, 0);
-    const masterBuffer = ctx.createBuffer(1, totalLength, 24000);
-    const channelData = masterBuffer.getChannelData(0);
-
-    let offset = 0;
-    for (const buffer of audioBuffers) {
-      channelData.set(buffer.getChannelData(0), offset);
-      offset += buffer.length;
+        return;
     }
 
-    return masterBuffer;
+    // 5. FETCH REMAINING CHUNKS (Background Parallel)
+    // We limit concurrency to 2 to avoid flooding bandwidth while playing
+    const remainingChunks = chunks.map((c, i) => ({ text: c, index: i })).slice(1);
+    
+    // Process remaining in batches of 2
+    const batchSize = 2;
+    for (let i = 0; i < remainingChunks.length; i += batchSize) {
+        if (signal.aborted) break;
+        const batch = remainingChunks.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (item) => {
+            try {
+                if (signal.aborted) return;
+                const b64 = await generateNaturalSpeech(item.text, voice, signal);
+                const buffer = pcmToAudioBuffer(base64ToBytes(b64), ctx);
+                audioQueueRef.current.set(item.index, buffer);
+            } catch (e) {
+                console.warn(`Chunk ${item.index} failed`, e);
+            }
+        }));
+    }
   };
+
+  // Renamed helper to match usage above
+  const splitSmartSmart = (text: string) => splitTextSmart(text);
 
   const handleStartProcessing = async () => {
     if (selectedFiles.length === 0) return;
-
-    // Reset Process AbortController
     mainProcessAbortControllerRef.current = new AbortController();
 
     try {
       stopAudio();
-      masterAudioBufferRef.current = null;
-
-      const fileCount = selectedFiles.length;
-      setState(prev => ({ ...prev, status: AppStatus.UPLOADING, progressMessage: `กำลังแปลงไฟล์ ${fileCount} รายการ...` }));
-      
+      setState(prev => ({ ...prev, status: AppStatus.UPLOADING, progressMessage: `กำลังแปลงไฟล์ ${selectedFiles.length} รายการ...` }));
       const filesData = await Promise.all(selectedFiles.map(compressFile));
 
       if (mainProcessAbortControllerRef.current.signal.aborted) return;
-
-      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `กำลังอ่านและสรุปใจความ (โหมดความเร็วสูง)...` }));
+      setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
       
-      // === OCR RETRY LOOP ===
-      let summaryData = null;
-      let ocrAttempt = 0;
-      const maxOcrRetries = 10;
+      const summaryData = await performOCRAndSummarize(filesData, mainProcessAbortControllerRef.current.signal);
       
-      while (!summaryData && ocrAttempt < maxOcrRetries) {
-          if (mainProcessAbortControllerRef.current.signal.aborted) return;
-
-          try {
-              // Pass signal to service
-              summaryData = await performOCRAndSummarize(filesData, mainProcessAbortControllerRef.current.signal);
-          } catch (e: any) {
-              if (mainProcessAbortControllerRef.current.signal.aborted) return;
-
-              ocrAttempt++;
-              if (ocrAttempt >= maxOcrRetries) throw e;
-              
-              if (isRetryableError(e)) {
-                  await waitWithCountdown(ocrAttempt * 3, `ระบบอ่านเอกสารกำลังทำงานหนัก (ลองใหม่ ${ocrAttempt}/${maxOcrRetries})`, mainProcessAbortControllerRef.current.signal);
-                  // Reset message after wait
-                  setState(prev => ({ ...prev, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
-              } else {
-                  throw e; // Non-retryable error, fail immediately
-              }
-          }
-      }
-      
-      if (!summaryData) throw new Error("Failed to process document after multiple attempts.");
-      const { original, summary } = summaryData;
-
       // === SHOW RESULT IMMEDIATELY ===
       setState({
         status: AppStatus.COMPLETED,
         result: { 
-          originalText: original, 
-          summary: summary,
+          originalText: summaryData.original, 
+          summary: summaryData.summary,
           isAudioUnavailable: false
         },
         error: null,
         progressMessage: 'เรียบร้อยแล้ว!'
       });
 
-      // === START AUDIO IN BACKGROUND (DEFAULT VOICE: PUCK) ===
-      // This ensures the first person loads immediately
-      generateAudioInBackground(summary, selectedVoice);
+      // === START AUDIO INSTANTLY ===
+      startSmartAudioGeneration(summaryData.summary, selectedVoice);
 
     } catch (err: any) {
-      if (err.name === 'AbortError') return; // Ignore cancellation errors
-      console.error(err);
+      if (err.name === 'AbortError') return;
       setState(prev => ({ ...prev, status: AppStatus.ERROR, error: err.message || 'เกิดข้อผิดพลาดในการประมวลผล' }));
     }
   };
   
   const handleCancel = () => {
-      // Cancel everything
       if (mainProcessAbortControllerRef.current) mainProcessAbortControllerRef.current.abort();
       if (audioProcessAbortControllerRef.current) audioProcessAbortControllerRef.current.abort();
-      
       stopAudio();
-      setIsGeneratingAudio(false);
+      setIsFirstChunkReady(false);
       setState({ status: AppStatus.IDLE, result: null, error: null, progressMessage: '' });
   };
 
-  const generateAudioInBackground = async (text: string, voice: string) => {
-    // 1. Abort previous audio generation if any
-    if (audioProcessAbortControllerRef.current) {
-        audioProcessAbortControllerRef.current.abort();
-    }
-    // 2. Create new controller
-    audioProcessAbortControllerRef.current = new AbortController();
-    const signal = audioProcessAbortControllerRef.current.signal;
-
-    setIsGeneratingAudio(true);
-    try {
-      if (!audioContextRef.current) getAudioContext();
-      
-      // Pass signal to interrupt if voice changes
-      const fullBuffer = await prepareFullAudio(text, voice, signal);
-      
-      if (!signal.aborted) {
-          masterAudioBufferRef.current = fullBuffer;
-          setIsGeneratingAudio(false);
-      }
-    } catch (audioErr: any) {
-      if (audioErr.name === 'AbortError') {
-          console.log(`Audio generation for ${voice} cancelled.`);
-          return;
-      }
-      console.error("Background audio failed:", audioErr);
-      setIsGeneratingAudio(false);
-      setState(prev => {
-        if (prev.result) {
-            return { 
-                ...prev, 
-                result: { ...prev.result, isAudioUnavailable: true } 
-            };
-        }
-        return prev;
-      });
-    }
-  };
-
-  const handlePlay = async () => {
+  // === SEQUENTIAL PLAYBACK ENGINE ===
+  const playSequence = async (index: number) => {
     const ctx = getAudioContext();
     if (ctx.state === 'suspended') await ctx.resume();
 
+    // 1. Check if buffer exists
+    const buffer = audioQueueRef.current.get(index);
+
+    if (!buffer) {
+        // If buffer isn't ready but we expect more chunks
+        if (index < totalChunksRef.current) {
+            // Buffer Underflow: Wait a bit and retry (Simple buffering logic)
+            console.log(`Buffering chunk ${index}...`);
+            setTimeout(() => {
+                if (isPlayingRef.current) playSequence(index);
+            }, 500); 
+            return;
+        } else {
+            // End of playback
+            setIsAudioPlaying(false);
+            isPlayingRef.current = false;
+            setCurrentPlayingIndex(0);
+            return;
+        }
+    }
+
+    // 2. Play Buffer
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    
+    source.onended = () => {
+        if (isPlayingRef.current) {
+            playSequence(index + 1);
+        }
+    };
+
+    source.start();
+    audioSourceRef.current = source;
+    setCurrentPlayingIndex(index);
+    isPlayingRef.current = true;
+    setIsAudioPlaying(true);
+  };
+
+  const handlePlay = () => {
     if (state.result?.isAudioUnavailable) {
-       // Retry logic
-       if (state.result?.summary) {
-          setState(prev => prev.result ? ({...prev, result: {...prev.result, isAudioUnavailable: false}}) : prev);
-          generateAudioInBackground(state.result.summary, selectedVoice);
-       } else {
-          alert("ขออภัย: โควต้าสร้างเสียงเต็มในขณะนี้ คุณสามารถอ่านบทสรุปได้ครับ");
-       }
+       startSmartAudioGeneration(state.result.summary, selectedVoice);
        return;
     }
 
-    if (isGeneratingAudio) return;
+    if (isPlayingRef.current) return; // Already playing
 
-    if (!masterAudioBufferRef.current && state.result?.summary) {
-        generateAudioInBackground(state.result.summary, selectedVoice);
-        return;
-    }
-
-    if (masterAudioBufferRef.current) {
-        stopAudio();
-        const source = ctx.createBufferSource();
-        source.buffer = masterAudioBufferRef.current;
-        source.connect(ctx.destination);
-        source.onended = () => setIsAudioPlaying(false);
-        source.start();
-        audioSourceRef.current = source;
-        setIsAudioPlaying(true);
-    }
+    // Start from beginning or resume logic (simplified to start from 0 for now)
+    playSequence(0);
   };
 
   const stopAudio = () => {
+    isPlayingRef.current = false;
     if (audioSourceRef.current) {
       try { audioSourceRef.current.stop(); } catch(e) {}
       audioSourceRef.current = null;
     }
     setIsAudioPlaying(false);
+    setCurrentPlayingIndex(0);
   };
 
-  const handleVoiceChange = async (voice: string) => {
-    // Immediate Feedback
+  const handleVoiceChange = (voice: string) => {
     setSelectedVoice(voice);
-    stopAudio();
-    masterAudioBufferRef.current = null;
-    
-    // Trigger new generation immediately (which cancels the old one internally)
     if (state.result?.summary) {
-        generateAudioInBackground(state.result.summary, voice);
+        startSmartAudioGeneration(state.result.summary, voice);
     }
   };
 
   const reset = () => {
-    // Cancel everything on reset
-    if (mainProcessAbortControllerRef.current) mainProcessAbortControllerRef.current.abort();
-    if (audioProcessAbortControllerRef.current) audioProcessAbortControllerRef.current.abort();
-
-    stopAudio();
-    setState({ status: AppStatus.IDLE, result: null, error: null, progressMessage: '' });
+    handleCancel();
     setSelectedFiles([]);
-    masterAudioBufferRef.current = null;
+  };
+
+  const handleFileSelection = (files: File[]) => {
+    setSelectedFiles(files);
   };
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 md:py-12 flex flex-col min-h-screen transition-colors duration-500 relative">
       
-      {/* Dark Mode Toggle with Animation */}
+      {/* Dark Mode Toggle */}
       <button 
         onClick={() => setIsDarkMode(!isDarkMode)} 
         className="fixed top-6 right-6 z-50 p-2 transition-transform duration-500 hover:scale-110 active:scale-95 focus:outline-none"
-        aria-label="Toggle Dark Mode"
       >
         <div className="relative w-20 h-20 flex items-center justify-center">
-          <span 
-            className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${
-               isDarkMode 
-                 ? 'rotate-0 opacity-100 scale-100 drop-shadow-[0_0_20px_rgba(255,255,255,0.8)]' 
-                 : 'rotate-180 opacity-0 scale-50'
-            }`}
-          >
-            🌙
-          </span>
-          <span 
-             className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${
-               !isDarkMode 
-                 ? 'rotate-0 opacity-100 scale-100 drop-shadow-[0_0_25px_rgba(253,186,116,1)]' 
-                 : '-rotate-180 opacity-0 scale-50'
-             }`}
-          >
-            ☀️
-          </span>
+          <span className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${isDarkMode ? 'rotate-0 opacity-100' : 'rotate-180 opacity-0'}`}>🌙</span>
+          <span className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${!isDarkMode ? 'rotate-0 opacity-100' : '-rotate-180 opacity-0'}`}>☀️</span>
         </div>
       </button>
 
@@ -542,7 +399,7 @@ const App: React.FC = () => {
                   {filePreviews.map((url, index) => (
                     <div key={index} className="aspect-[3/4] bg-gray-100 dark:bg-slate-700 rounded-xl overflow-hidden shadow-md relative">
                        <img src={url} className="w-full h-full object-cover" />
-                       <button onClick={() => removeFile(index)} className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1">✕</button>
+                       <button onClick={() => setSelectedFiles(prev => prev.filter((_, i) => i !== index))} className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1">✕</button>
                     </div>
                   ))}
                 </div>
@@ -557,18 +414,16 @@ const App: React.FC = () => {
         )}
 
         {state.status !== AppStatus.IDLE && state.status !== AppStatus.COMPLETED && state.status !== AppStatus.ERROR && (
-          <ProcessingOverlay 
-             status={state.status} 
-             message={state.progressMessage} 
-             onCancel={handleCancel}
-          />
+          <ProcessingOverlay status={state.status} message={state.progressMessage} onCancel={handleCancel} />
         )}
 
         {state.status === AppStatus.COMPLETED && state.result && (
           <ResultView 
             result={state.result} 
             isPlaying={isAudioPlaying}
-            isGenerating={isGeneratingAudio}
+            // Logic change: 'isGenerating' in UI now means "Is the FIRST chunk still loading?"
+            // If first chunk is ready, we stop showing the spinner so user can click Play.
+            isGenerating={!isFirstChunkReady && !state.result.isAudioUnavailable}
             onPlay={handlePlay} 
             onStop={stopAudio}
             onReset={reset}
@@ -585,7 +440,6 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
-
     </div>
   );
 };
