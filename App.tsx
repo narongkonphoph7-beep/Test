@@ -51,16 +51,16 @@ const pcmToAudioBuffer = (data: Uint8Array, audioContext: AudioContext): AudioBu
 };
 
 // === SIMPLE SPLITTER ===
-const splitTextSimple = (text: string): string[] => {
+// Updated: Supports custom maxLength to optimize for parallel fetching
+const splitTextSimple = (text: string, maxLength: number = 800): string[] => {
   const chunks: string[] = [];
-  // MAXIMIZED CHUNK SIZE: 4000 chars per request.
-  const maxChunkSize = 4000; 
   
   let currentChunk = "";
+  // Split by sentence delimiters but keep them
   const sentences = text.split(/([\n.!?]+)/);
 
   for (const s of sentences) {
-    if ((currentChunk.length + s.length) > maxChunkSize && currentChunk.trim()) {
+    if ((currentChunk.length + s.length) > maxLength && currentChunk.trim()) {
       chunks.push(currentChunk.trim());
       currentChunk = s;
     } else {
@@ -227,55 +227,68 @@ const App: React.FC = () => {
            msg.includes('connection error');
   };
 
-  // --- CORE FUNCTION: Prepare Full Audio Buffer ---
-  // Now supports AbortSignal to cancel mid-generation
+  // --- CORE FUNCTION: Prepare Full Audio Buffer (PARALLEL OPTIMIZED) ---
+  // Now fetches chunks in parallel to speed up generation
   const prepareFullAudio = async (text: string, voice: string, signal?: AbortSignal) => {
     const ctx = getAudioContext();
-    const chunks = splitTextSimple(text);
-    const audioBuffers: AudioBuffer[] = [];
+    
+    // Split text into smaller chunks (~600 chars) for effective parallelism
+    // 600 chars is roughly 2 paragraphs. For a 2000 char summary, this creates ~4 requests.
+    const chunks = splitTextSimple(text, 600);
+    
+    // Track progress locally to minimize state updates
+    let completedCount = 0;
+    const updateProgress = () => {
+       completedCount++;
+       // Update UI occasionally to show progress
+       setState(prev => ({ 
+           ...prev, 
+           progressMessage: `กำลังสร้างเสียงบรรยาย... (${completedCount}/${chunks.length} ส่วน)` 
+       }));
+    };
 
-    for (let i = 0; i < chunks.length; i++) {
+    // Map each chunk to a promise
+    const promises = chunks.map(async (chunk, index) => {
+      // Early abort check
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-      // Small delay to be safe
-      if (i > 0) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-
       let attempt = 0;
-      const maxRetries = 15; 
-      let success = false;
-
-      while (attempt < maxRetries && !success) {
+      const maxRetries = 8; // Slightly reduced retries for parallel requests
+      
+      while (attempt < maxRetries) {
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
+        
         try {
-          setState(prev => ({ ...prev, progressMessage: `กำลังสร้างเสียงบรรยาย... (ส่วนที่ ${i + 1}/${chunks.length})` }));
-          // Pass signal to generateNaturalSpeech
-          const b64 = await generateNaturalSpeech(chunks[i], voice, signal);
+          const b64 = await generateNaturalSpeech(chunk, voice, signal);
           const buffer = pcmToAudioBuffer(base64ToBytes(b64), ctx);
-          audioBuffers.push(buffer);
-          success = true;
+          updateProgress();
+          return buffer;
         } catch (e: any) {
            if (e.name === 'AbortError') throw e;
 
            attempt++;
-           console.warn(`Audio chunk ${i+1}/${chunks.length} failed:`, e);
+           console.warn(`Audio chunk ${index+1}/${chunks.length} failed attempt ${attempt}:`, e);
 
            if (attempt >= maxRetries) throw e;
 
+           // Randomized backoff to prevent thundering herd on retry
            if (isRetryableError(e)) {
-             const waitSeconds = attempt * 3; 
-             await waitWithCountdown(waitSeconds, `กำลังลองใหม่ครั้งที่ ${attempt}`, signal);
+             const waitTime = (attempt * 1000) + (Math.random() * 1000);
+             await new Promise(r => setTimeout(r, waitTime));
            } else {
-             await new Promise(r => setTimeout(r, 2000));
+             await new Promise(r => setTimeout(r, 1000));
            }
         }
       }
-    }
+      throw new Error("Failed to generate audio chunk");
+    });
+
+    // Wait for all chunks to resolve (Parallel Execution)
+    const audioBuffers = await Promise.all(promises);
 
     if (audioBuffers.length === 0) return null;
 
+    // Combine buffers
     const totalLength = audioBuffers.reduce((acc, b) => acc + b.length, 0);
     const masterBuffer = ctx.createBuffer(1, totalLength, 24000);
     const channelData = masterBuffer.getChannelData(0);
