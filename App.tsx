@@ -92,8 +92,9 @@ const App: React.FC = () => {
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   
-  // Cancellation Ref
-  const abortControllerRef = useRef<AbortController | null>(null);
+  // Cancellation Refs
+  const mainProcessAbortControllerRef = useRef<AbortController | null>(null); // For OCR
+  const audioProcessAbortControllerRef = useRef<AbortController | null>(null); // For TTS
 
   // Dark Mode State
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -198,10 +199,10 @@ const App: React.FC = () => {
   };
 
   // Helper: Generic Wait with Countdown
-  const waitWithCountdown = async (seconds: number, message: string) => {
+  const waitWithCountdown = async (seconds: number, message: string, signal?: AbortSignal) => {
     for(let i = seconds; i > 0; i--) {
       // Check cancellation
-      if (abortControllerRef.current?.signal.aborted) return;
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       
       setState(prev => ({
          ...prev,
@@ -227,38 +228,45 @@ const App: React.FC = () => {
   };
 
   // --- CORE FUNCTION: Prepare Full Audio Buffer ---
-  // Now runs in background, doesn't block UI
-  const prepareFullAudio = async (text: string, voice: string) => {
+  // Now supports AbortSignal to cancel mid-generation
+  const prepareFullAudio = async (text: string, voice: string, signal?: AbortSignal) => {
     const ctx = getAudioContext();
     const chunks = splitTextSimple(text);
     const audioBuffers: AudioBuffer[] = [];
 
     for (let i = 0; i < chunks.length; i++) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
       // Small delay to be safe
       if (i > 0) {
         await new Promise(r => setTimeout(r, 100));
       }
 
       let attempt = 0;
-      const maxRetries = 15; // Increased even more
+      const maxRetries = 15; 
       let success = false;
 
       while (attempt < maxRetries && !success) {
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
         try {
           setState(prev => ({ ...prev, progressMessage: `กำลังสร้างเสียงบรรยาย... (ส่วนที่ ${i + 1}/${chunks.length})` }));
-          const b64 = await generateNaturalSpeech(chunks[i], voice);
+          // Pass signal to generateNaturalSpeech
+          const b64 = await generateNaturalSpeech(chunks[i], voice, signal);
           const buffer = pcmToAudioBuffer(base64ToBytes(b64), ctx);
           audioBuffers.push(buffer);
           success = true;
         } catch (e: any) {
+           if (e.name === 'AbortError') throw e;
+
            attempt++;
            console.warn(`Audio chunk ${i+1}/${chunks.length} failed:`, e);
 
            if (attempt >= maxRetries) throw e;
 
            if (isRetryableError(e)) {
-             const waitSeconds = attempt * 3; // 3, 6, 9, 12...
-             await waitWithCountdown(waitSeconds, `กำลังลองใหม่ครั้งที่ ${attempt}`);
+             const waitSeconds = attempt * 3; 
+             await waitWithCountdown(waitSeconds, `กำลังลองใหม่ครั้งที่ ${attempt}`, signal);
            } else {
              await new Promise(r => setTimeout(r, 2000));
            }
@@ -284,8 +292,8 @@ const App: React.FC = () => {
   const handleStartProcessing = async () => {
     if (selectedFiles.length === 0) return;
 
-    // Reset AbortController
-    abortControllerRef.current = new AbortController();
+    // Reset Process AbortController
+    mainProcessAbortControllerRef.current = new AbortController();
 
     try {
       stopAudio();
@@ -296,7 +304,7 @@ const App: React.FC = () => {
       
       const filesData = await Promise.all(selectedFiles.map(compressFile));
 
-      if (abortControllerRef.current.signal.aborted) return;
+      if (mainProcessAbortControllerRef.current.signal.aborted) return;
 
       setState(prev => ({ ...prev, status: AppStatus.PROCESSING_OCR, progressMessage: `กำลังอ่านและสรุปใจความ (โหมดความเร็วสูง)...` }));
       
@@ -306,19 +314,19 @@ const App: React.FC = () => {
       const maxOcrRetries = 10;
       
       while (!summaryData && ocrAttempt < maxOcrRetries) {
-          if (abortControllerRef.current.signal.aborted) return;
+          if (mainProcessAbortControllerRef.current.signal.aborted) return;
 
           try {
               // Pass signal to service
-              summaryData = await performOCRAndSummarize(filesData, abortControllerRef.current.signal);
+              summaryData = await performOCRAndSummarize(filesData, mainProcessAbortControllerRef.current.signal);
           } catch (e: any) {
-              if (abortControllerRef.current.signal.aborted) return;
+              if (mainProcessAbortControllerRef.current.signal.aborted) return;
 
               ocrAttempt++;
               if (ocrAttempt >= maxOcrRetries) throw e;
               
               if (isRetryableError(e)) {
-                  await waitWithCountdown(ocrAttempt * 3, `ระบบอ่านเอกสารกำลังทำงานหนัก (ลองใหม่ ${ocrAttempt}/${maxOcrRetries})`);
+                  await waitWithCountdown(ocrAttempt * 3, `ระบบอ่านเอกสารกำลังทำงานหนัก (ลองใหม่ ${ocrAttempt}/${maxOcrRetries})`, mainProcessAbortControllerRef.current.signal);
                   // Reset message after wait
                   setState(prev => ({ ...prev, progressMessage: `กำลังอ่านและสรุปใจความ...` }));
               } else {
@@ -342,7 +350,8 @@ const App: React.FC = () => {
         progressMessage: 'เรียบร้อยแล้ว!'
       });
 
-      // === START AUDIO IN BACKGROUND ===
+      // === START AUDIO IN BACKGROUND (DEFAULT VOICE: PUCK) ===
+      // This ensures the first person loads immediately
       generateAudioInBackground(summary, selectedVoice);
 
     } catch (err: any) {
@@ -353,27 +362,42 @@ const App: React.FC = () => {
   };
   
   const handleCancel = () => {
-      if (abortControllerRef.current) {
-          abortControllerRef.current.abort();
-      }
+      // Cancel everything
+      if (mainProcessAbortControllerRef.current) mainProcessAbortControllerRef.current.abort();
+      if (audioProcessAbortControllerRef.current) audioProcessAbortControllerRef.current.abort();
+      
       stopAudio();
       setIsGeneratingAudio(false);
       setState({ status: AppStatus.IDLE, result: null, error: null, progressMessage: '' });
   };
 
   const generateAudioInBackground = async (text: string, voice: string) => {
+    // 1. Abort previous audio generation if any
+    if (audioProcessAbortControllerRef.current) {
+        audioProcessAbortControllerRef.current.abort();
+    }
+    // 2. Create new controller
+    audioProcessAbortControllerRef.current = new AbortController();
+    const signal = audioProcessAbortControllerRef.current.signal;
+
     setIsGeneratingAudio(true);
     try {
-      // Re-generate audio context if needed
       if (!audioContextRef.current) getAudioContext();
       
-      const fullBuffer = await prepareFullAudio(text, voice);
-      masterAudioBufferRef.current = fullBuffer;
-      setIsGeneratingAudio(false);
-    } catch (audioErr) {
+      // Pass signal to interrupt if voice changes
+      const fullBuffer = await prepareFullAudio(text, voice, signal);
+      
+      if (!signal.aborted) {
+          masterAudioBufferRef.current = fullBuffer;
+          setIsGeneratingAudio(false);
+      }
+    } catch (audioErr: any) {
+      if (audioErr.name === 'AbortError') {
+          console.log(`Audio generation for ${voice} cancelled.`);
+          return;
+      }
       console.error("Background audio failed:", audioErr);
       setIsGeneratingAudio(false);
-      // Mark audio as unavailable in UI
       setState(prev => {
         if (prev.result) {
             return { 
@@ -391,9 +415,8 @@ const App: React.FC = () => {
     if (ctx.state === 'suspended') await ctx.resume();
 
     if (state.result?.isAudioUnavailable) {
-       // If it failed before, try one more time on click!
+       // Retry logic
        if (state.result?.summary) {
-          // Reset unavailability flag to try again
           setState(prev => prev.result ? ({...prev, result: {...prev.result, isAudioUnavailable: false}}) : prev);
           generateAudioInBackground(state.result.summary, selectedVoice);
        } else {
@@ -402,10 +425,8 @@ const App: React.FC = () => {
        return;
     }
 
-    // If still generating, just wait (UI shows spinner)
     if (isGeneratingAudio) return;
 
-    // If missing buffer but not generating, try again
     if (!masterAudioBufferRef.current && state.result?.summary) {
         generateAudioInBackground(state.result.summary, selectedVoice);
         return;
@@ -432,15 +453,22 @@ const App: React.FC = () => {
   };
 
   const handleVoiceChange = async (voice: string) => {
+    // Immediate Feedback
     setSelectedVoice(voice);
     stopAudio();
     masterAudioBufferRef.current = null;
+    
+    // Trigger new generation immediately (which cancels the old one internally)
     if (state.result?.summary) {
         generateAudioInBackground(state.result.summary, voice);
     }
   };
 
   const reset = () => {
+    // Cancel everything on reset
+    if (mainProcessAbortControllerRef.current) mainProcessAbortControllerRef.current.abort();
+    if (audioProcessAbortControllerRef.current) audioProcessAbortControllerRef.current.abort();
+
     stopAudio();
     setState({ status: AppStatus.IDLE, result: null, error: null, progressMessage: '' });
     setSelectedFiles([]);
@@ -450,14 +478,13 @@ const App: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 md:py-12 flex flex-col min-h-screen transition-colors duration-500 relative">
       
-      {/* Dark Mode Toggle with Animation - FRAMELESS & GLOWING */}
+      {/* Dark Mode Toggle with Animation */}
       <button 
         onClick={() => setIsDarkMode(!isDarkMode)} 
         className="fixed top-6 right-6 z-50 p-2 transition-transform duration-500 hover:scale-110 active:scale-95 focus:outline-none"
         aria-label="Toggle Dark Mode"
       >
         <div className="relative w-20 h-20 flex items-center justify-center">
-          {/* Moon Icon */}
           <span 
             className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${
                isDarkMode 
@@ -467,8 +494,6 @@ const App: React.FC = () => {
           >
             🌙
           </span>
-          
-          {/* Sun Icon */}
           <span 
              className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${
                !isDarkMode 
@@ -483,13 +508,11 @@ const App: React.FC = () => {
 
       <Header />
       
-      {/* Changed justify-center to justify-start and reduced margins to pull content up */}
       <main className="flex-grow flex flex-col items-center justify-start space-y-4 mt-2">
         {state.status === AppStatus.IDLE && (
           <div className="w-full animate-fade-in">
             {selectedFiles.length === 0 ? (
               <>
-                {/* Reduced margin from mb-4 to mb-2 */}
                 <div className="text-center mb-2">
                   <h2 className="text-3xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-blue-500 mb-1 py-2 leading-normal">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
                   <p className="text-gray-600 dark:text-gray-300">อัปโหลดรูปภาพ หรือ PDF เอกสารภาษาไทยของคุณที่นี่</p>

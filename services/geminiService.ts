@@ -21,8 +21,8 @@ const getFriendlyErrorMessage = (error: any): string => {
   if (msg.includes('Server Error') || msg.includes('Unexpected token')) {
     return `⚠️ เชื่อมต่อ Server ไม่สำเร็จ (${msg})`;
   }
-  if (msg.includes('The operation was aborted') || msg.includes('Timeout')) {
-    return "การทำงานล่าช้าเกินกำหนด (Timeout) กรุณาลองใหม่อีกครั้ง";
+  if (msg.includes('The operation was aborted') || msg.includes('Timeout') || msg.name === 'AbortError') {
+    return "การทำงานถูกยกเลิก หรือล่าช้าเกินกำหนด";
   }
   return `เกิดข้อผิดพลาด: ${msg}`;
 };
@@ -33,9 +33,15 @@ const safeFetch = async (url: string, options: RequestInit, signal?: AbortSignal
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 120000); 
 
-  // Combine signals
+  // Combine signals (User abort + Timeout abort)
   const fetchSignal = signal || controller.signal;
+  
+  // If a parent signal is provided, listen to it to abort the fetch properly
   if (signal) {
+      if (signal.aborted) {
+          clearTimeout(timeoutId);
+          throw new DOMException('Aborted', 'AbortError');
+      }
       signal.addEventListener('abort', () => {
           clearTimeout(timeoutId);
           controller.abort();
@@ -66,7 +72,7 @@ const safeFetch = async (url: string, options: RequestInit, signal?: AbortSignal
   } catch (err: any) {
     clearTimeout(timeoutId);
     if (err.name === 'AbortError') {
-       throw new Error("Timeout: ระบบใช้เวลานานเกินไป กรุณาลองลดจำนวนหน้าลง");
+       throw err; // Re-throw abort error cleanly
     }
     throw err;
   }
@@ -95,7 +101,8 @@ const sanitizeForTTS = (text: string): string => {
   return text.replace(/[*#_`~\[\]]/g, '').replace(/\s+/g, ' ').trim();
 };
 
-export const generateNaturalSpeech = async (text: string, voiceName: string): Promise<string> => {
+// Added 'signal' parameter to support cancellation
+export const generateNaturalSpeech = async (text: string, voiceName: string, signal?: AbortSignal): Promise<string> => {
   const cleanText = sanitizeForTTS(text);
   if (!cleanText) throw new Error("SKIPPABLE_EMPTY_TEXT");
 
@@ -107,12 +114,13 @@ export const generateNaturalSpeech = async (text: string, voiceName: string): Pr
         text: cleanText,
         voiceName: voiceName
       }),
-    });
+    }, signal);
 
     if (!data.audioBase64) throw new Error("No Audio Data received");
     return data.audioBase64;
 
   } catch (error: any) {
+    if (error.name === 'AbortError') throw error;
     console.error("TTS Failed:", error);
     throw new Error(getFriendlyErrorMessage(error));
   }

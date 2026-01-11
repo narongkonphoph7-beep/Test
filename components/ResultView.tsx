@@ -14,12 +14,13 @@ interface ResultViewProps {
   playbackProgress?: { current: number; total: number };
 }
 
+// Updated Voice List: Replaced Zephyr with Aoede to ensure correct Female voice generation
 const VOICES = [
-  { id: 'Puck', name: 'Puck (นุ่มนวล/ชาย)', gender: 'Male' },
-  { id: 'Charon', name: 'Charon (ลึก/ชาย)', gender: 'Male' },
-  { id: 'Kore', name: 'Kore (ผ่อนคลาย/หญิง)', gender: 'Female' },
-  { id: 'Fenrir', name: 'Fenrir (ดุดัน/ชาย)', gender: 'Male' },
-  { id: 'Zephyr', name: 'Zephyr (สดใส/หญิง)', gender: 'Female' },
+  { id: 'Puck', name: 'Puck (ชาย - นุ่มนวล)', gender: 'Male' },
+  { id: 'Charon', name: 'Charon (ชาย - เสียงทุ้มลึก)', gender: 'Male' },
+  { id: 'Kore', name: 'Kore (หญิง - ผ่อนคลาย)', gender: 'Female' },
+  { id: 'Fenrir', name: 'Fenrir (ชาย - ดุดัน)', gender: 'Male' },
+  { id: 'Aoede', name: 'Aoede (หญิง - ทางการ)', gender: 'Female' }, 
 ];
 
 export const ResultView: React.FC<ResultViewProps> = ({ 
@@ -81,9 +82,9 @@ export const ResultView: React.FC<ResultViewProps> = ({
                   </span>
                 </>
               ) : isGenerating ? (
-                <span>กำลังเริ่มสร้างเสียง...</span>
+                <span>กำลังเริ่มสร้างเสียงใหม่...</span>
               ) : (
-                <span>กดฟังได้ทันที (ระบบสตรีมเสียงเร็วพิเศษ)</span>
+                <span>กดฟังได้ทันที (พร้อมใช้งาน)</span>
               )}
             </div>
           </div>
@@ -129,7 +130,7 @@ export const ResultView: React.FC<ResultViewProps> = ({
         </div>
       </div>
 
-      {/* AI Voice Selector (Show but disable if unavailable to show options) */}
+      {/* AI Voice Selector (Always enabled) */}
       <div className={`
          bg-violet-50/50 dark:bg-slate-800/50 px-8 py-6 border-b border-violet-100 dark:border-slate-700
          ${result.isAudioUnavailable ? 'opacity-50 pointer-events-none grayscale' : ''}
@@ -141,19 +142,23 @@ export const ResultView: React.FC<ResultViewProps> = ({
             {VOICES.map((voice) => (
                 <button
                     key={voice.id}
-                    onClick={() => !isPlaying && !isGenerating && onVoiceChange(voice.id)}
-                    disabled={isPlaying || isGenerating}
+                    onClick={() => {
+                        // Allow clicking even if generating, but not if playing current
+                        if (selectedVoice !== voice.id) {
+                            onVoiceChange(voice.id);
+                        }
+                    }}
+                    disabled={false} 
                     className={`
                         relative py-3 px-2 rounded-xl border text-sm font-medium transition-all
                         flex flex-col items-center justify-center gap-1 backdrop-blur-sm
                         ${selectedVoice === voice.id 
-                            ? 'bg-violet-600 border-violet-600 text-white shadow-md scale-105' 
+                            ? 'bg-violet-600 border-violet-600 text-white shadow-md scale-105 ring-2 ring-violet-200 dark:ring-violet-900' 
                             : 'bg-white/80 dark:bg-slate-700/80 border-gray-200 dark:border-slate-600 text-gray-600 dark:text-gray-200 hover:border-violet-300 hover:bg-violet-50 dark:hover:bg-slate-600'}
-                        ${(isPlaying || isGenerating) ? 'opacity-50 cursor-not-allowed' : ''}
                     `}
                 >
                     <span className="text-xl">{voice.gender === 'Male' ? '👨' : '👩'}</span>
-                    <span>{voice.id}</span>
+                    <span className="truncate w-full text-center">{voice.name}</span>
                 </button>
             ))}
         </div>
