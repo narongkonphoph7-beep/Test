@@ -212,14 +212,17 @@ const App: React.FC = () => {
         return;
     }
 
-    // 5. FETCH REMAINING CHUNKS (Background Parallel)
-    // We limit concurrency to 2 to avoid flooding bandwidth while playing
+    // 5. FETCH REMAINING CHUNKS (Background Parallel with Throttling)
     const remainingChunks = chunks.map((c, i) => ({ text: c, index: i })).slice(1);
     
-    // Process remaining in batches of 2
-    const batchSize = 2;
+    // Reduced batch size and added delay to be friendlier to Free Tier API limits
+    const batchSize = 1; // Process 1 by 1 for safety
     for (let i = 0; i < remainingChunks.length; i += batchSize) {
         if (signal.aborted) break;
+
+        // *** CRITICAL FIX: Add delay between requests to avoid 429 errors ***
+        await new Promise(r => setTimeout(r, 1500)); 
+
         const batch = remainingChunks.slice(i, i + batchSize);
         await Promise.all(batch.map(async (item) => {
             try {
@@ -229,6 +232,7 @@ const App: React.FC = () => {
                 audioQueueRef.current.set(item.index, buffer);
             } catch (e) {
                 console.warn(`Chunk ${item.index} failed`, e);
+                // We don't fail the whole process here, just this chunk will be silent or skipped
             }
         }));
     }
@@ -362,27 +366,33 @@ const App: React.FC = () => {
     setSelectedFiles(files);
   };
 
+  const removeFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 md:py-12 flex flex-col min-h-screen transition-colors duration-500 relative">
       
-      {/* Dark Mode Toggle */}
+      {/* Dark Mode Toggle - Simplified (Reverted) */}
       <button 
         onClick={() => setIsDarkMode(!isDarkMode)} 
-        className="fixed top-6 right-6 z-50 p-2 transition-transform duration-500 hover:scale-110 active:scale-95 focus:outline-none"
+        className="fixed top-4 right-4 md:top-6 md:right-6 z-50 bg-white/80 dark:bg-slate-800/80 p-3 rounded-full shadow-lg border border-gray-200 dark:border-slate-700 backdrop-blur-sm transition-transform hover:scale-110"
+        aria-label="Toggle Dark Mode"
       >
-        <div className="relative w-20 h-20 flex items-center justify-center">
-          <span className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${isDarkMode ? 'rotate-0 opacity-100' : 'rotate-180 opacity-0'}`}>🌙</span>
-          <span className={`absolute inset-0 text-6xl md:text-7xl flex items-center justify-center transform transition-all duration-700 ease-in-out ${!isDarkMode ? 'rotate-0 opacity-100' : '-rotate-180 opacity-0'}`}>☀️</span>
-        </div>
+        <span className="text-2xl md:text-3xl filter drop-shadow-sm">
+          {isDarkMode ? '🌙' : '☀️'}
+        </span>
       </button>
 
       <Header />
       
+      {/* Changed justify-center to justify-start and reduced margins to pull content up */}
       <main className="flex-grow flex flex-col items-center justify-start space-y-4 mt-2">
         {state.status === AppStatus.IDLE && (
           <div className="w-full animate-fade-in">
             {selectedFiles.length === 0 ? (
               <>
+                {/* Reduced margin from mb-4 to mb-2 */}
                 <div className="text-center mb-2">
                   <h2 className="text-3xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-blue-500 mb-1 py-2 leading-normal">เริ่มสร้างเรื่องเล่าจากเอกสาร</h2>
                   <p className="text-gray-600 dark:text-gray-300">อัปโหลดรูปภาพ หรือ PDF เอกสารภาษาไทยของคุณที่นี่</p>
@@ -399,7 +409,7 @@ const App: React.FC = () => {
                   {filePreviews.map((url, index) => (
                     <div key={index} className="aspect-[3/4] bg-gray-100 dark:bg-slate-700 rounded-xl overflow-hidden shadow-md relative">
                        <img src={url} className="w-full h-full object-cover" />
-                       <button onClick={() => setSelectedFiles(prev => prev.filter((_, i) => i !== index))} className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1">✕</button>
+                       <button onClick={() => removeFile(index)} className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1">✕</button>
                     </div>
                   ))}
                 </div>
@@ -414,7 +424,11 @@ const App: React.FC = () => {
         )}
 
         {state.status !== AppStatus.IDLE && state.status !== AppStatus.COMPLETED && state.status !== AppStatus.ERROR && (
-          <ProcessingOverlay status={state.status} message={state.progressMessage} onCancel={handleCancel} />
+          <ProcessingOverlay 
+             status={state.status} 
+             message={state.progressMessage} 
+             onCancel={handleCancel}
+          />
         )}
 
         {state.status === AppStatus.COMPLETED && state.result && (
@@ -440,6 +454,7 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
     </div>
   );
 };

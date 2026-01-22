@@ -69,7 +69,7 @@ export const ResultView: React.FC<ResultViewProps> = ({
             </h2>
             <div className="text-blue-50 dark:text-blue-100 opacity-90 flex items-center space-x-2">
               {result.isAudioUnavailable ? (
-                <span className="font-medium">ระบบ AI ทำงานหนัก กรุณากดลองใหม่</span>
+                <span className="font-medium text-sm md:text-base">โควต้าฟรีอาจเต็ม (แนะนำ: ใช้ API Key แบบ Paid)</span>
               ) : isPlaying ? (
                 <>
                   <span className="relative flex h-3 w-3">
