@@ -363,7 +363,8 @@ const App: React.FC = () => {
   };
 
   const handleFileSelection = (files: File[]) => {
-    setSelectedFiles(files);
+    // MODIFIED: Append new files instead of replacing
+    setSelectedFiles(prev => [...prev, ...files]);
   };
 
   const removeFile = (index: number) => {
@@ -373,7 +374,7 @@ const App: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 md:py-12 flex flex-col min-h-screen transition-colors duration-500 relative">
       
-      {/* Dark Mode Toggle - Simplified (Reverted) */}
+      {/* Dark Mode Toggle */}
       <button 
         onClick={() => setIsDarkMode(!isDarkMode)} 
         className="fixed top-4 right-4 md:top-6 md:right-6 z-50 bg-white/80 dark:bg-slate-800/80 p-3 rounded-full shadow-lg border border-gray-200 dark:border-slate-700 backdrop-blur-sm transition-transform hover:scale-110"
@@ -403,18 +404,52 @@ const App: React.FC = () => {
               <div className="w-full">
                 <div className="flex justify-between items-center mb-6">
                    <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">เอกสารที่เลือก ({selectedFiles.length})</h2>
-                   <button onClick={() => setSelectedFiles([])} className="text-red-500 font-semibold">ล้างทั้งหมด</button>
+                   <button onClick={() => setSelectedFiles([])} className="text-red-500 font-semibold hover:text-red-700 transition">ล้างทั้งหมด</button>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                
+                {/* Grid Container */}
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-8 animate-fade-in">
+                  
+                  {/* Existing Files */}
                   {filePreviews.map((url, index) => (
-                    <div key={index} className="aspect-[3/4] bg-gray-100 dark:bg-slate-700 rounded-xl overflow-hidden shadow-md relative">
-                       <img src={url} className="w-full h-full object-cover" />
-                       <button onClick={() => removeFile(index)} className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1">✕</button>
+                    <div key={index} className="aspect-[3/4] group relative bg-gray-100 dark:bg-slate-700 rounded-2xl overflow-hidden shadow-md border border-gray-200 dark:border-slate-600 transition-all hover:shadow-xl">
+                       <img src={url} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" alt={`Page ${index + 1}`} />
+                       
+                       {/* Gradient Overlay on Hover */}
+                       <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+
+                       {/* Delete Button (Centered on Hover) */}
+                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-300 transform scale-90 group-hover:scale-100">
+                          <button 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                removeFile(index);
+                            }} 
+                            className="bg-red-500 hover:bg-red-600 text-white rounded-full p-4 shadow-xl flex flex-col items-center gap-1 transition-transform hover:scale-105"
+                            title="ลบหน้านี้"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                       </div>
+                       
+                       {/* Page Number Badge */}
+                       <div className="absolute bottom-2 left-2 bg-black/50 backdrop-blur-md text-white text-xs px-2 py-1 rounded-lg">
+                          หน้าที่ {index + 1}
+                       </div>
                     </div>
                   ))}
+
+                  {/* Add New File Button */}
+                  <div className="aspect-[3/4]">
+                    <FileUploader onUpload={handleFileSelection} compact={true} />
+                  </div>
+
                 </div>
+
                 <div className="flex justify-center mt-8">
-                  <button onClick={handleStartProcessing} className="bg-gradient-to-r from-green-600 to-teal-600 text-white text-xl font-bold py-4 px-12 rounded-full shadow-xl hover:scale-105 transition">
+                  <button onClick={handleStartProcessing} className="bg-gradient-to-r from-green-600 to-teal-600 text-white text-xl font-bold py-4 px-12 rounded-full shadow-xl hover:scale-105 transition transform active:scale-95">
                     ⚡ วิเคราะห์และสร้างเสียง
                   </button>
                 </div>

@@ -1,4 +1,3 @@
-
 import React, { useRef } from 'react';
 
 interface FileUploaderProps {
@@ -39,7 +38,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
      return (
         <div 
           onClick={() => fileInputRef.current?.click()}
-          className="cursor-pointer border-2 border-dashed border-blue-200 dark:border-slate-600 bg-white/70 backdrop-blur-sm dark:bg-slate-800/70 hover:bg-white/90 dark:hover:bg-slate-700 transition-all rounded-xl h-full w-full flex flex-col items-center justify-center p-4 text-center min-h-[150px]"
+          className="cursor-pointer border-2 border-dashed border-blue-300 dark:border-slate-500 bg-blue-50/50 dark:bg-slate-800/50 hover:bg-blue-100 dark:hover:bg-slate-700 hover:border-blue-500 dark:hover:border-slate-400 transition-all duration-300 rounded-2xl h-full w-full flex flex-col items-center justify-center p-4 text-center group"
         >
           <input 
             type="file" 
@@ -49,8 +48,12 @@ export const FileUploader: React.FC<FileUploaderProps> = ({ onUpload, compact = 
             ref={fileInputRef}
             onChange={handleChange}
           />
-          <span className="text-3xl mb-2 text-blue-500 dark:text-blue-400">+</span>
-          <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">เพิ่มรูป/PDF</span>
+          <div className="bg-white dark:bg-slate-700 p-3 rounded-full shadow-sm mb-3 group-hover:scale-110 transition-transform">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-blue-500 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </div>
+          <span className="text-sm text-blue-800 dark:text-blue-200 font-semibold group-hover:text-blue-600">เพิ่มรูป/PDF</span>
         </div>
      );
   }
